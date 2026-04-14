@@ -1,0 +1,717 @@
+<!DOCTYPE html>
+<!--
+  index.html — MiniSQL 웹 뷰어 (지용)
+  ============================================================================
+
+  ▣ 이 파일이 하는 일
+    브라우저에서 SQL 을 입력하고 "Run" 버튼을 누르면 server.py 의 /query
+    엔드포인트로 보내서 파싱 결과를 받아 표시한다.
+
+  ▣ 신택스 하이라이트
+    CodeMirror 5 (CDN) 사용. 좌측 SQL 입력은 sql 모드, 우측 결과는
+    javascript 모드 (JSON 은 JS 의 부분집합이라 그대로 통한다).
+
+  ▣ 의존성
+    CodeMirror 5 만 CDN 에서 로드. 그 외 라이브러리 0 개.
+    인터넷 안 되는 환경에서는 자동으로 평범한 textarea 로 폴백한다.
+  ============================================================================
+-->
+<html lang="ko">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>MiniSQL Viewer</title>
+
+<!-- CodeMirror 5 — 코어 + 다크 테마 -->
+<link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/codemirror/5.65.16/codemirror.min.css">
+<link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/codemirror/5.65.16/theme/dracula.min.css">
+
+<style>
+  /* CSS 변수: 다크 테마 색을 한 곳에서 관리. */
+  :root {
+    --bg: #0d1117;
+    --panel: #161b22;
+    --border: #30363d;
+    --text: #c9d1d9;
+    --muted: #8b949e;
+    --accent: #58a6ff;
+    --success: #3fb950;
+    --error: #f85149;
+    --code: #1f2428;
+  }
+  * { box-sizing: border-box; }
+  html, body {
+    margin: 0;
+    padding: 0;
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", system-ui, sans-serif;
+    background: var(--bg);
+    color: var(--text);
+    height: 100%;
+  }
+  header {
+    padding: 16px 24px;
+    border-bottom: 1px solid var(--border);
+    display: flex;
+    align-items: center;
+    gap: 12px;
+  }
+  header h1 { font-size: 18px; margin: 0; font-weight: 600; }
+  header .badge {
+    font-size: 11px;
+    padding: 2px 8px;
+    border-radius: 12px;
+    background: var(--panel);
+    border: 1px solid var(--border);
+    color: var(--muted);
+  }
+  main {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 16px;
+    padding: 16px 24px;
+    height: calc(100vh - 56px);
+  }
+  .panel {
+    background: var(--panel);
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    display: flex;
+    flex-direction: column;
+    overflow: hidden;
+  }
+  .panel-header {
+    padding: 10px 14px;
+    border-bottom: 1px solid var(--border);
+    font-size: 13px;
+    color: var(--muted);
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+  }
+  /* CodeMirror 가 차지할 영역 — flex: 1 로 패널 가득 채움 */
+  .editor-host {
+    flex: 1;
+    overflow: hidden;
+    display: flex;
+    flex-direction: column;
+  }
+  .CodeMirror {
+    flex: 1;
+    height: auto !important;
+    font-family: "JetBrains Mono", "Menlo", "Monaco", monospace;
+    font-size: 15px;
+    line-height: 1.65;
+  }
+  /* CodeMirror 다크 테마와 우리 패널 색을 어울리게 미세 조정 */
+  .cm-s-dracula.CodeMirror, .cm-s-dracula .CodeMirror-gutters {
+    background: var(--code) !important;
+  }
+
+  /* 폴백 textarea (CodeMirror 로드 실패 시) */
+  textarea.fallback {
+    flex: 1;
+    background: var(--code);
+    color: var(--text);
+    border: none;
+    padding: 14px;
+    font-family: "JetBrains Mono", monospace;
+    font-size: 15px;
+    line-height: 1.65;
+    resize: none;
+    outline: none;
+  }
+
+  /* ─── 카드 뷰 (statement 별로 분리) ───────────────────── */
+  .cards-host {
+    flex: 1;
+    overflow: auto;
+    padding: 14px;
+    background: var(--code);
+  }
+  .stmt-card {
+    border: 1px solid var(--border);
+    border-left: 3px solid var(--accent);
+    border-radius: 6px;
+    margin-bottom: 12px;
+    background: var(--panel);
+    overflow: hidden;
+  }
+  .stmt-card:last-child { margin-bottom: 0; }
+  .stmt-card-head {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    padding: 8px 14px;
+    background: rgba(88, 166, 255, 0.08);
+    border-bottom: 1px solid var(--border);
+    font-size: 12px;
+  }
+  .stmt-type-badge {
+    color: var(--accent);
+    font-weight: 700;
+    letter-spacing: 0.5px;
+  }
+  .stmt-table {
+    color: var(--muted);
+  }
+  .stmt-table::before { content: "→ "; }
+  .stmt-card-body {
+    padding: 12px 14px;
+    font-family: "JetBrains Mono", "Menlo", monospace;
+    font-size: 14px;
+    line-height: 1.65;
+    white-space: pre-wrap;
+    word-break: break-word;
+    color: var(--text);
+  }
+  /* 카드 안 JSON 컬러링 */
+  .json-key   { color: #8be9fd; }   /* cyan  — 키 */
+  .json-str   { color: #f1fa8c; }   /* yellow — 문자열 */
+  .json-num   { color: #bd93f9; }   /* purple — 숫자 */
+  .json-bool  { color: #ff79c6; }   /* pink   — true/false */
+  .json-null  { color: #ff79c6; }
+  .json-punct { color: var(--muted); }
+
+  /* SELECT 결과 표 — 카드 안 inline 표시 */
+  .stmt-result-wrap {
+    margin-top: 12px;
+    padding-top: 10px;
+    border-top: 1px dashed var(--border);
+  }
+  .stmt-result-label {
+    font-size: 10px;
+    font-weight: 700;
+    color: var(--success);
+    letter-spacing: 0.5px;
+    margin-bottom: 6px;
+  }
+  .stmt-result-table {
+    background: var(--bg);
+    border: 1px solid var(--border);
+    border-radius: 4px;
+    padding: 0;
+    font-family: "JetBrains Mono", "Menlo", monospace;
+    font-size: 13px;
+    color: var(--text);
+    overflow-x: auto;
+  }
+  /* 진짜 HTML 테이블 — 사각형 그리드 */
+  .stmt-result-table table.grid {
+    border-collapse: collapse;
+    width: 100%;
+    font-size: 13px;
+  }
+  .stmt-result-table table.grid th,
+  .stmt-result-table table.grid td {
+    border: 1px solid var(--border);
+    padding: 6px 12px;
+    text-align: left;
+    white-space: nowrap;
+    vertical-align: middle;
+  }
+  .stmt-result-table table.grid thead th {
+    background: rgba(189, 147, 249, 0.12);
+    color: var(--accent);
+    font-weight: 700;
+    letter-spacing: 0.3px;
+    border-bottom: 2px solid var(--accent);
+    position: sticky;
+    top: 0;
+  }
+  .stmt-result-table table.grid tbody tr:nth-child(even) {
+    background: rgba(255, 255, 255, 0.02);
+  }
+  .stmt-result-table table.grid tbody tr:hover {
+    background: rgba(80, 250, 123, 0.08);
+  }
+  .stmt-result-table table.grid tbody td.empty-row {
+    color: var(--muted);
+    font-style: italic;
+    text-align: center;
+  }
+  .stmt-result-footer {
+    color: var(--muted);
+    font-size: 11px;
+    padding: 6px 12px;
+    border-top: 1px solid var(--border);
+    background: rgba(0, 0, 0, 0.15);
+  }
+
+  /* 토글 스위치 */
+  .view-toggle {
+    display: inline-flex;
+    background: var(--bg);
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    overflow: hidden;
+  }
+  .view-toggle button {
+    background: transparent;
+    color: var(--muted);
+    border: none;
+    padding: 4px 12px;
+    font-size: 11px;
+    font-weight: 600;
+    cursor: pointer;
+    border-radius: 0;
+  }
+  .view-toggle button.active {
+    background: var(--accent);
+    color: var(--bg);
+  }
+  .view-toggle button:hover:not(.active) {
+    color: var(--text);
+  }
+
+  .actions {
+    padding: 10px 14px;
+    border-top: 1px solid var(--border);
+    display: flex;
+    gap: 8px;
+    align-items: center;
+  }
+  button {
+    background: var(--accent);
+    color: #0d1117;
+    border: none;
+    padding: 6px 14px;
+    border-radius: 6px;
+    cursor: pointer;
+    font-size: 13px;
+    font-weight: 600;
+  }
+  button:hover { filter: brightness(1.1); }
+  button:disabled { opacity: 0.5; cursor: not-allowed; }
+  button.secondary {
+    background: var(--panel);
+    color: var(--text);
+    border: 1px solid var(--border);
+  }
+  .status { margin-left: auto; font-size: 12px; color: var(--muted); }
+  .status.ok  { color: var(--success); }
+  .status.err { color: var(--error); }
+
+  /* stderr / 에러 표시 영역 (오른쪽 패널 하단) */
+  .meta {
+    padding: 10px 14px;
+    border-top: 1px solid var(--border);
+    font-size: 11px;
+    color: var(--muted);
+    background: rgba(0,0,0,0.2);
+    max-height: 100px;
+    overflow: auto;
+    white-space: pre-wrap;
+    word-break: break-word;
+  }
+  .meta.err { color: var(--error); }
+
+  kbd {
+    background: var(--bg);
+    border: 1px solid var(--border);
+    border-radius: 4px;
+    padding: 1px 5px;
+    font-size: 11px;
+    color: var(--muted);
+  }
+</style>
+</head>
+<body>
+
+<header>
+  <h1>MiniSQL Viewer</h1>
+  <span class="badge">parser → JSON → 표시</span>
+</header>
+
+<main>
+
+  <!-- 왼쪽: SQL 입력 (CodeMirror SQL 모드) -->
+  <section class="panel">
+    <div class="panel-header">
+      <span>SQL 입력</span>
+      <span><kbd>Ctrl</kbd> + <kbd>Enter</kbd> 실행</span>
+    </div>
+    <div class="editor-host">
+      <textarea id="sql" class="fallback" spellcheck="false">CREATE TABLE users (id INT, name VARCHAR, age INT, joined DATE);
+INSERT INTO users (id, name, age, joined) VALUES (1, 'alice', 25, '2024-01-15');
+INSERT INTO users (id, name, age, joined) VALUES (2, 'bob', 31, '2024-03-02');
+SELECT id, name FROM users WHERE age > 26 ORDER BY name DESC LIMIT 5;
+DELETE FROM users WHERE id = 1;</textarea>
+    </div>
+    <div class="actions">
+      <button id="run">▶ Run</button>
+      <button id="clear" class="secondary">Clear</button>
+      <span id="status" class="status">대기 중</span>
+    </div>
+  </section>
+
+  <!-- 오른쪽: 파싱 결과 (Cards / JSON 토글) -->
+  <section class="panel">
+    <div class="panel-header">
+      <span>파싱 결과</span>
+      <div style="display:flex; gap:10px; align-items:center;">
+        <span id="stmt-count"></span>
+        <div class="view-toggle">
+          <button id="view-cards" class="active" type="button">Cards</button>
+          <button id="view-json" type="button">JSON</button>
+        </div>
+      </div>
+    </div>
+
+    <!-- Card 뷰 (기본) -->
+    <div id="cards-host" class="cards-host">
+      <div style="color:var(--muted); padding:14px;">// Run 버튼을 눌러보세요.</div>
+    </div>
+
+    <!-- JSON 뷰 (CodeMirror) — 토글로 표시/숨김 -->
+    <div id="json-host" class="editor-host" style="display:none">
+      <textarea id="output" class="fallback" readonly>// Run 버튼을 눌러보세요.</textarea>
+    </div>
+
+    <div id="meta" class="meta" style="display:none"></div>
+  </section>
+
+</main>
+
+<!-- CodeMirror 5 — 코어 + SQL 모드 + JS(JSON) 모드 -->
+<script src="https://cdnjs.cloudflare.com/ajax/libs/codemirror/5.65.16/codemirror.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/codemirror/5.65.16/mode/sql/sql.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/codemirror/5.65.16/mode/javascript/javascript.min.js"></script>
+
+<script>
+  /* ----------------------------------------------------------------------
+   * MiniSQL Viewer — CodeMirror 기반 SQL/JSON 뷰어
+   * ----------------------------------------------------------------------
+   */
+
+  const $sqlTextarea    = document.getElementById('sql');
+  const $outputTextarea = document.getElementById('output');
+  const $run            = document.getElementById('run');
+  const $clear          = document.getElementById('clear');
+  const $status         = document.getElementById('status');
+  const $stmtCount      = document.getElementById('stmt-count');
+  const $meta           = document.getElementById('meta');
+  const $cardsHost      = document.getElementById('cards-host');
+  const $jsonHost       = document.getElementById('json-host');
+  const $viewCards      = document.getElementById('view-cards');
+  const $viewJson       = document.getElementById('view-json');
+
+  /* 마지막 응답을 캐시해서 토글 시 다시 렌더 */
+  let lastResult = null;
+  let currentView = 'cards';   /* 기본: 카드 뷰 */
+
+  // CodeMirror 인스턴스 (로드 실패 시 null 로 두고 textarea 폴백 사용)
+  let sqlEditor = null;
+  let outEditor = null;
+
+  // CodeMirror 라이브러리가 로드됐으면 두 textarea 를 에디터로 변환.
+  if (typeof CodeMirror !== 'undefined') {
+    sqlEditor = CodeMirror.fromTextArea($sqlTextarea, {
+      mode: 'text/x-sql',
+      theme: 'dracula',
+      lineNumbers: true,
+      lineWrapping: true,
+      indentUnit: 2,
+      tabSize: 2,
+      extraKeys: {
+        'Ctrl-Enter': runQuery,
+        'Cmd-Enter':  runQuery,
+      },
+    });
+
+    outEditor = CodeMirror.fromTextArea($outputTextarea, {
+      mode: { name: 'javascript', json: true },
+      theme: 'dracula',
+      lineNumbers: true,
+      lineWrapping: true,
+      readOnly: true,
+    });
+  }
+
+  // 좌측 SQL 텍스트 가져오기 (에디터 / 폴백 양쪽 지원)
+  function getSqlText() {
+    return sqlEditor ? sqlEditor.getValue() : $sqlTextarea.value;
+  }
+  // 좌측 SQL 텍스트 설정
+  function setSqlText(text) {
+    if (sqlEditor) sqlEditor.setValue(text);
+    else           $sqlTextarea.value = text;
+  }
+  // 우측 결과 텍스트 설정
+  function setOutputText(text) {
+    if (outEditor) outEditor.setValue(text);
+    else           $outputTextarea.value = text;
+  }
+
+  // 상태 텍스트 갱신 + 클래스 (ok / err) 토글
+  function setStatus(text, kind) {
+    $status.textContent = text;
+    $status.className = 'status' + (kind ? ' ' + kind : '');
+  }
+
+  // 메타 영역 (stderr / 에러) 표시
+  function setMeta(text, kind) {
+    if (!text) {
+      $meta.style.display = 'none';
+      $meta.textContent = '';
+      $meta.className = 'meta';
+      return;
+    }
+    $meta.style.display = 'block';
+    $meta.textContent = text;
+    $meta.className = 'meta' + (kind ? ' ' + kind : '');
+  }
+
+  /* HTML escape (XSS 방지) */
+  function esc(s) {
+    return String(s)
+      .replace(/&/g, '&amp;')
+      .replace(/</g, '&lt;')
+      .replace(/>/g, '&gt;');
+  }
+
+  /* JSON 문자열을 받아 색칠된 HTML 로 변환 (정규식 기반).
+   * 카드 안에서 가벼운 신택스 컬러링용. CodeMirror 만큼 정밀하진 않지만
+   * 카드마다 별도 에디터 띄우는 부담을 피한다. */
+  function colorizeJson(jsonText) {
+    const escaped = esc(jsonText);
+    return escaped.replace(
+      /("(\\u[a-fA-F0-9]{4}|\\[^u]|[^\\"])*"(\s*:)?|\b(true|false|null)\b|-?\d+(\.\d+)?([eE][+-]?\d+)?)/g,
+      function (match) {
+        let cls = 'json-num';
+        if (/^"/.test(match)) {
+          cls = /:$/.test(match) ? 'json-key' : 'json-str';
+        } else if (/true|false/.test(match)) {
+          cls = 'json-bool';
+        } else if (/null/.test(match)) {
+          cls = 'json-null';
+        }
+        return '<span class="' + cls + '">' + match + '</span>';
+      }
+    );
+  }
+
+  /* SELECT 결과 표 (server.py 의 _result 텍스트) 를 진짜 HTML <table> 로 변환.
+   *
+   *   id | name           ← 첫 줄: 헤더 → <thead>
+   *   1 | alice           ← 데이터 → <tbody>
+   *   2 | bob
+   *   (2 rows)            ← 마지막 줄: 푸터 → 하단 메타 줄
+   *
+   * storage.c 의 print_rowset 출력 형식을 가정 (' | ' 구분자, 마지막 "(N rows)").
+   * 단일 값 (예: COUNT(*) → "2") 처럼 구분자 없는 경우도 단일 컬럼 표로 렌더한다.
+   */
+  function splitRow(line) {
+    /* ' | ' 정확 구분 — 데이터에 파이프가 들어있어도 공백 사이만 끊는다. */
+    return line.split(/\s\|\s/);
+  }
+
+  function renderResultTable(rawText) {
+    if (!rawText) return '';
+    const lines = rawText.split('\n').filter(function (l) { return l.length > 0; });
+    if (lines.length === 0) return '';
+
+    let footer = '';
+    let bodyLines = lines.slice();
+
+    // 마지막 줄이 "(N rows)" 형태면 푸터로 분리
+    if (bodyLines.length > 0 && /^\(\d+ rows?\)$/.test(bodyLines[bodyLines.length - 1])) {
+      footer = bodyLines.pop();
+    }
+
+    // 헤더 = 첫 줄
+    if (bodyLines.length === 0) {
+      // 헤더조차 없으면 빈 결과 — 푸터만 표시
+      return '<div class="stmt-result-wrap">' +
+               '<div class="stmt-result-label">▼ 결과</div>' +
+               '<div class="stmt-result-table">' +
+                 (footer ? '<div class="stmt-result-footer">' + esc(footer) + '</div>' : '') +
+               '</div>' +
+             '</div>';
+    }
+
+    const headerCells = splitRow(bodyLines.shift());
+    const dataRows = bodyLines.map(splitRow);
+
+    let html = '<div class="stmt-result-wrap">' +
+                 '<div class="stmt-result-label">▼ 결과</div>' +
+                 '<div class="stmt-result-table">' +
+                   '<table class="grid">';
+
+    // <thead>
+    html += '<thead><tr>';
+    for (const h of headerCells) {
+      html += '<th>' + esc(h) + '</th>';
+    }
+    html += '</tr></thead>';
+
+    // <tbody>
+    html += '<tbody>';
+    if (dataRows.length === 0) {
+      html += '<tr><td class="empty-row" colspan="' + headerCells.length + '">(0 rows)</td></tr>';
+    } else {
+      for (const row of dataRows) {
+        html += '<tr>';
+        for (let i = 0; i < headerCells.length; i++) {
+          const cell = i < row.length ? row[i] : '';
+          html += '<td>' + esc(cell) + '</td>';
+        }
+        html += '</tr>';
+      }
+    }
+    html += '</tbody></table>';
+
+    if (footer) {
+      html += '<div class="stmt-result-footer">' + esc(footer) + '</div>';
+    }
+    html += '</div></div>';
+    return html;
+  }
+
+  /* 카드 뷰: statement 마다 type/table 헤더 + 색칠된 JSON 본문 + 결과 표 */
+  function renderCards(stmts) {
+    if (!stmts || stmts.length === 0) {
+      $cardsHost.innerHTML =
+        '<div style="color:var(--muted); padding:14px;">// (빈 결과)</div>';
+      return;
+    }
+    let html = '';
+    for (const s of stmts) {
+      const type = s.type || (s.raw ? 'RAW' : 'UNKNOWN');
+      const table = s.table || '';
+      // _result 는 JSON 본문에서 제외하고 결과 표로 별도 표시
+      const display = Object.assign({}, s);
+      const result = display._result;
+      delete display._result;
+
+      const body = s.raw
+        ? esc(s.raw)
+        : colorizeJson(JSON.stringify(display, null, 2));
+      const resultHtml = result ? renderResultTable(result) : '';
+
+      html += '<div class="stmt-card">' +
+                '<div class="stmt-card-head">' +
+                  '<span class="stmt-type-badge">' + esc(type) + '</span>' +
+                  (table ? '<span class="stmt-table">' + esc(table) + '</span>' : '') +
+                '</div>' +
+                '<div class="stmt-card-body">' + body + resultHtml + '</div>' +
+              '</div>';
+    }
+    $cardsHost.innerHTML = html;
+  }
+
+  /* JSON 뷰: 한 덩어리 JSON 배열로 CodeMirror 에 표시 */
+  function renderJsonView(stmts) {
+    if (!stmts || stmts.length === 0) {
+      setOutputText('// (빈 결과)');
+    } else {
+      setOutputText(JSON.stringify(stmts, null, 2));
+    }
+    /* CodeMirror refresh — display:none → display:block 직후 폭 계산 보정 */
+    if (outEditor) setTimeout(function () { outEditor.refresh(); }, 0);
+  }
+
+  /* 캐시된 lastResult 를 현재 view 로 다시 렌더 */
+  function rerenderCurrentView() {
+    if (!lastResult) return;
+    const stmts = lastResult.statements || [];
+    if (currentView === 'cards') renderCards(stmts);
+    else                          renderJsonView(stmts);
+  }
+
+  /* 토글 버튼 클릭 핸들러 */
+  function setView(view) {
+    currentView = view;
+    if (view === 'cards') {
+      $cardsHost.style.display = '';
+      $jsonHost.style.display  = 'none';
+      $viewCards.classList.add('active');
+      $viewJson.classList.remove('active');
+    } else {
+      $cardsHost.style.display = 'none';
+      $jsonHost.style.display  = '';
+      $viewJson.classList.add('active');
+      $viewCards.classList.remove('active');
+    }
+    rerenderCurrentView();
+  }
+
+  // 서버 응답 (result) 을 받아 화면에 그리기.
+  function renderResult(result) {
+    lastResult = result;
+
+    // 에러가 있으면 양쪽 뷰 모두 에러 표시
+    if (result.error) {
+      $cardsHost.innerHTML =
+        '<div style="color:var(--error); padding:14px;">' + esc(result.error) + '</div>';
+      setOutputText('// ' + result.error);
+      setMeta(result.error, 'err');
+      $stmtCount.textContent = '';
+      return;
+    }
+
+    const stmts = result.statements || [];
+    $stmtCount.textContent =
+      `${stmts.length} statement${stmts.length === 1 ? '' : 's'}`;
+
+    /* 현재 활성화된 뷰만 그리고, 토글 시 lazy render */
+    rerenderCurrentView();
+
+    // sqlparser 가 stderr 에 찍은 메시지가 있으면 하단에 별도 표시
+    setMeta(result.stderr && result.stderr.trim() ? result.stderr : '');
+  }
+
+  // Run 버튼 / Ctrl+Enter / Cmd+Enter
+  async function runQuery() {
+    const sql = getSqlText().trim();
+    if (!sql) { setStatus('SQL 비어있음', 'err'); return; }
+
+    $run.disabled = true;
+    setStatus('파싱 중...');
+
+    try {
+      const res = await fetch('/query', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ sql }),
+      });
+      const data = await res.json();
+      renderResult(data);
+      setStatus(res.ok ? '완료' : '에러', res.ok ? 'ok' : 'err');
+    } catch (e) {
+      setOutputText('// 요청 실패: ' + e.message);
+      setMeta('네트워크 에러: ' + e.message, 'err');
+      setStatus('네트워크 에러', 'err');
+    } finally {
+      $run.disabled = false;
+    }
+  }
+
+  // 이벤트 핸들러 등록
+  $run.addEventListener('click', runQuery);
+  $viewCards.addEventListener('click', function () { setView('cards'); });
+  $viewJson.addEventListener('click',  function () { setView('json');  });
+  $clear.addEventListener('click', () => {
+    setSqlText('');
+    lastResult = null;
+    $cardsHost.innerHTML =
+      '<div style="color:var(--muted); padding:14px;">// Run 버튼을 눌러보세요.</div>';
+    setOutputText('// Run 버튼을 눌러보세요.');
+    setMeta('');
+    $stmtCount.textContent = '';
+    setStatus('대기 중');
+  });
+
+  // CodeMirror 가 로드 안 된 경우 (오프라인 등) 폴백 textarea 에서도
+  // Ctrl+Enter 가 동작하도록 등록.
+  if (!sqlEditor) {
+    $sqlTextarea.addEventListener('keydown', (e) => {
+      if ((e.ctrlKey || e.metaKey) && e.key === 'Enter') {
+        e.preventDefault();
+        runQuery();
+      }
+    });
+  }
+</script>
+
+</body>
+</html>
