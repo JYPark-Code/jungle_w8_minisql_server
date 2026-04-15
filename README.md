@@ -231,6 +231,42 @@ CREATE TABLE payments (
 
 ---
 
+## 메모리 할당 레이어 — CS:APP malloc lab 과의 차이
+
+발표 포인트: **우리 프로젝트는 자체 allocator 를 구현하지 않고 libc 위에 올라가 있다.**
+
+```
+[ bptree.c / storage.c / executor.c ... ]   ← 애플리케이션 (B+Tree 노드, 스키마, RowSet)
+              │  malloc / calloc / realloc / free
+              ▼
+[ glibc ptmalloc2 ]                          ← 청크 관리, bin/arena, free list
+              │  brk() / mmap()
+              ▼
+[ Linux 커널 ]                                ← 실제 가상 메모리
+```
+
+| 항목 | CS:APP malloc lab (`mm_malloc`) | 이 프로젝트 |
+|---|---|---|
+| 할당 주체 | `mm_malloc` 을 직접 구현 | libc `malloc` 호출만 |
+| 힙 확보 | `mem_sbrk` 로 받은 고정 힙 시뮬레이터 | ptmalloc2 가 `brk`/`mmap` 으로 동적 확보 |
+| 블록 관리 | 헤더/풋터, implicit · explicit · segregated free list 를 직접 작성 | ptmalloc2 의 bin/arena 가 처리, 우리는 개입 X |
+| 관심사 | "할당기 자체를 어떻게 만드는가" | "할당기 위에서 자료구조를 어떻게 설계하는가" |
+| 코드 예시 | `place()`, `coalesce()`, `find_fit()` | `malloc(sizeof *node)` 한 줄 |
+
+**즉, B+Tree 노드 하나도 결국 ptmalloc2 청크 위에 얹힌다.**
+`src/bptree.c` 의 `leaf_create` / `internal_create` / `node_free` 는 노드당 `malloc` 3회 (구조체 + keys + children/row_indices) + 대응되는 `free` 3회로 끝나며, 풀이나 arena 를 따로 두지 않는다.
+
+**설계 선택의 이유**
+- 이번 스프린트의 초점은 **B+Tree 자료구조와 SQL 실행 경로 통합**이지 allocator 최적화가 아님
+- 100만 건 벤치 (INSERT 0.75 µs/op, SEARCH 0.41 µs/op) 에서 ptmalloc2 가 이미 충분히 빠름 — 커스텀 풀로 바꿔도 체감 이득은 제한적
+- valgrind 누수 0 을 지키려면 할당/해제 대칭만 정확하면 되고, libc 에 위임하는 쪽이 검증 부담이 작음
+
+**확장 여지 (발표 Q&A 대비)**
+- 노드 크기가 고정이므로 **slab/pool allocator** 로 바꾸면 캐시 친화적 배치 + `malloc` 호출 횟수 감소 가능
+- 디스크 기반으로 확장하면 페이지 단위 버퍼풀이 필요 → 이때는 libc 대신 자체 메모리 매니저가 필수
+
+---
+
 ## 이전 프로젝트
 
 Week 6 SQL Parser → https://github.com/JYPark-Code/jungle_w6_mini_mysql_sql_parser
