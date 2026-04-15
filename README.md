@@ -252,9 +252,9 @@ CSV 와 BIN 을 **동일 데이터로 동시에** 씀. 바이너리 포맷은 `s
 main
 └── dev
     ├── feature/bptree-core       (지용)
-    ├── feature/executor-index    (팀원 A)
-    ├── feature/storage-autoid    (팀원 B)
-    └── feature/benchmark         (팀원 C)
+    ├── feature/executor-index    (정환)
+    ├── feature/storage-autoid    (민철)
+    └── feature/benchmark         (규태)
 ```
 
 - `feature/* → dev` PR → 지용 리뷰 후 머지
