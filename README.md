@@ -491,8 +491,8 @@ CREATE TABLE payments (
         │
         ▼
 [디스크]
-  data/schemas/<table>.schema    ← 컬럼 정의 (영속)
-  data/tables/<table>.csv        ← 실제 레코드 (영속)
+  data/schema/<table>.schema     ← 컬럼 정의 (영속) — `컬럼명,타입` 2열 CSV
+  data/tables/<table>.csv        ← 실제 레코드 (영속) — 헤더 없음, 스키마 순서대로 값 나열
 ```
 
 **`/api/inject` (더미 결제 100k 주입) 의 구체 흐름:**
@@ -507,7 +507,7 @@ CREATE TABLE payments (
 ### ✅ 있는 것
 | 대상 | 위치 | 범위 |
 |---|---|---|
-| **CSV 영속** | `data/tables/*.csv`, `data/schemas/*.schema` | 프로세스 간 영속 (디스크) |
+| **CSV 영속** | `data/tables/*.csv`, `data/schema/*.schema` | 프로세스 간 영속 (디스크) |
 | **`s_meta` 캐시** | `storage.c` — 테이블별 `next_id`, `next_row_idx` | 한 프로세스 내. 반복 INSERT 시 CSV 전체 재스캔 방지 |
 | **`index_registry`** | `src/index_registry.c` — 테이블명 → `BPTree*` 매핑 | 한 프로세스 내. 같은 프로세스에서 여러 쿼리가 같은 트리 재사용 |
 | **B+Tree 재구성** | `storage.c:rebuild_index()` — DELETE/UPDATE 성공 시 CSV 전체를 다시 읽어 트리 재구축 | 한 프로세스 내 정합성 보장 |
