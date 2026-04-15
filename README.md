@@ -240,6 +240,66 @@ CREATE TABLE payments (
 
 ---
 
+## 데이터 플로우 (웹 → 디스크)
+
+웹 데모는 **별도 DB 데몬이 없다**. 기존 CLI 바이너리 `./sqlparser` 를 매 요청마다 `subprocess` 로 띄우는 얇은 wrapper.
+
+```
+[브라우저]
+  │  fetch POST /api/query | /api/inject | /api/bench
+  ▼
+[web/server.py]   ← http.server stdlib, CORS 불필요 (정적 파일도 같은 포트)
+  │  subprocess.run(["./sqlparser", "--json", SQL])  or  ["./benchmark", ...]
+  ▼
+[./sqlparser]   ← C 바이너리, 요청마다 새 프로세스
+  ├─ parser.c       : SQL 토큰화 + AST
+  ├─ executor.c     : WHERE id=? → bptree_search / BETWEEN → bptree_range / else 선형
+  ├─ storage.c      : CSV read/append, RowSet 구성
+  └─ bptree.c       : 메모리 B+ 트리 (프로세스 수명 동안만 존재)
+        │
+        ▼
+[디스크]
+  data/schemas/<table>.schema    ← 컬럼 정의 (영속)
+  data/tables/<table>.csv        ← 실제 레코드 (영속)
+```
+
+**`/api/inject` (더미 결제 100k 주입) 의 구체 흐름:**
+1. `server.py:inject_payments()` 가 `INSERT INTO payments ...` SQL 문자열 대량 생성
+2. `./sqlparser` 한 번 호출 → 해당 프로세스에서 CSV append + B+Tree 생성/누적
+3. 프로세스 종료 → **B+Tree 소멸, CSV 만 남음**
+
+---
+
+## 영속화 & 캐싱 — 현재 상태와 한계
+
+### ✅ 있는 것
+| 대상 | 위치 | 범위 |
+|---|---|---|
+| **CSV 영속** | `data/tables/*.csv`, `data/schemas/*.schema` | 프로세스 간 영속 (디스크) |
+| **`s_meta` 캐시** | `storage.c` — 테이블별 `next_id`, `next_row_idx` | 한 프로세스 내. 반복 INSERT 시 CSV 전체 재스캔 방지 |
+| **`index_registry`** | `src/index_registry.c` — 테이블명 → `BPTree*` 매핑 | 한 프로세스 내. 같은 프로세스에서 여러 쿼리가 같은 트리 재사용 |
+| **B+Tree 재구성** | `storage.c:rebuild_index()` — DELETE/UPDATE 성공 시 CSV 전체를 다시 읽어 트리 재구축 | 한 프로세스 내 정합성 보장 |
+
+### ❌ 없는 것 (의도된 한계)
+- **B+Tree 영속 X** — 메모리에만 존재. 프로세스 종료 시 소멸
+- **프로세스 간 캐시 X** — subprocess 기반이라 각 `./sqlparser` 호출은 콜드 스타트
+- **페이지 버퍼풀 X** — 디스크 I/O 는 매 쿼리마다 `fopen` → 전체 스캔/append
+
+### ⚠️ 웹 데모 관점에서 중요한 함의
+- `/api/inject` 호출 직후 **다른** `/api/query` 호출로 `WHERE id=?` 를 날리면 새 프로세스 → `index_registry` 가 비어 있음 → `executor_try_indexed_select` 가 NULL 리턴 → 선형 탐색 fallback
+- 즉 웹 UI 의 "주입 후 id 조회" 는 현재 구조상 **인덱스 이점을 얻지 못한다**
+- 벤치 차트(`/api/bench`) 가 빠른 건 `./benchmark` 바이너리가 **자기 프로세스 내에서** INSERT → SELECT 를 연속으로 수행하기 때문 (트리가 살아있는 동안 조회)
+
+### 이번 프로젝트의 의도
+이번 스프린트의 scope 는 **"B+Tree 자료구조 + SQL 실행 경로 통합"** 이고, 디스크 기반 DBMS 의 영속 인덱스는 범위 밖. "CSV = 영속 데이터, B+Tree = 세션 인덱스" 라는 이분법이 의도된 선택입니다.
+
+### 확장 여지 (Q&A 대비)
+- **인덱스 사이드카 파일**: `data/indexes/<table>.bpt` 로 트리를 덤프/로드 → 콜드 스타트 제거
+- **상주 데몬 모드**: `sqlparser --daemon` + Unix socket → `server.py` 가 접속만 → 트리가 프로세스 수명만큼 산다
+- **버퍼풀**: CSV 대신 고정 크기 페이지 파일 + LRU 버퍼풀 (PostgreSQL shared_buffers 계보)
+
+---
+
 ## 메모리 할당 레이어 — CS:APP malloc lab 과의 차이
 
 발표 포인트: **우리 프로젝트는 자체 allocator 를 구현하지 않고 libc 위에 올라가 있다.**
