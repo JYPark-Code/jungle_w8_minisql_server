@@ -144,17 +144,165 @@ static void test_insert_duplicate_overwrites(void) {
 }
 
 static void test_insert_capacity_limit(void) {
-    printf("[TEST] 리프 용량 (order-1) 초과 시 split 미구현 — 추가분은 무시\n");
-    BPTree *t = bptree_create(4); /* 용량 = 3 */
+    printf("[TEST] Phase 4: 리프 용량 초과 → leaf split 으로 전부 유지\n");
+    BPTree *t = bptree_create(4); /* 리프 당 max 3 키, 4번째가 split 트리거 */
     bptree_insert(t, 1, 10);
     bptree_insert(t, 2, 20);
     bptree_insert(t, 3, 30);
-    bptree_insert(t, 4, 40); /* 용량 초과, Phase 3 에서는 버려짐 */
-    CHECK(bptree_search(t, 1) == 10, "첫 3건은 유지");
-    CHECK(bptree_search(t, 2) == 20, "첫 3건은 유지");
-    CHECK(bptree_search(t, 3) == 30, "첫 3건은 유지");
-    CHECK(bptree_search(t, 4) == -1, "용량 초과건은 미삽입 (split 후 Phase 4)");
+    bptree_insert(t, 4, 40);
+    CHECK(bptree_search(t, 1) == 10, "split 후 id=1 유지");
+    CHECK(bptree_search(t, 2) == 20, "split 후 id=2 유지");
+    CHECK(bptree_search(t, 3) == 30, "split 후 id=3 유지");
+    CHECK(bptree_search(t, 4) == 40, "split 로 승격된 새 리프의 id=4 조회 성공");
     bptree_destroy(t);
+}
+
+/* ---------- Phase 4: leaf split + root grow ---------- */
+
+static void test_leaf_split_ascending(void) {
+    printf("[TEST] order=4 오름차순 삽입 9건 (leaf split 다수, 내부 full 직전)\n");
+    BPTree *t = bptree_create(4);
+    int n = 9; /* Phase 4: 내부 노드 split 전까지만 — Phase 5 에서 확장 */
+    for (int i = 1; i <= n; ++i) bptree_insert(t, i, i * 100);
+    int ok = 1;
+    for (int i = 1; i <= n; ++i) {
+        if (bptree_search(t, i) != i * 100) ok = 0;
+    }
+    CHECK(ok, "1..9 오름차순 삽입 후 전수 조회 성공");
+    bptree_destroy(t);
+}
+
+static void test_leaf_split_descending(void) {
+    printf("[TEST] order=4 내림차순 삽입 9건\n");
+    BPTree *t = bptree_create(4);
+    int n = 9;
+    for (int i = n; i >= 1; --i) bptree_insert(t, i, i * 7);
+    int ok = 1;
+    for (int i = 1; i <= n; ++i) {
+        if (bptree_search(t, i) != i * 7) ok = 0;
+    }
+    CHECK(ok, "내림차순 삽입 후 전수 조회 성공");
+    bptree_destroy(t);
+}
+
+static void test_leaf_split_mixed_larger(void) {
+    printf("[TEST] order=16 로 15건 뒤섞어 삽입 (leaf 여러 번 split, 내부 안정)\n");
+    BPTree *t = bptree_create(16);
+    int keys[15];
+    for (int i = 0; i < 15; ++i) keys[i] = (i * 7 + 3) % 15; /* 순열 */
+    for (int i = 0; i < 15; ++i) bptree_insert(t, keys[i], keys[i] * 10);
+    int ok = 1;
+    for (int i = 0; i < 15; ++i) {
+        if (bptree_search(t, keys[i]) != keys[i] * 10) ok = 0;
+    }
+    CHECK(ok, "뒤섞인 15건 전수 조회 성공");
+    bptree_destroy(t);
+}
+
+static void test_leaf_split_root_grows(void) {
+    printf("[TEST] 리프만 있던 트리가 split 후 내부 루트로 성장\n");
+    BPTree *t = bptree_create(4);
+    /* order=4 → 리프 max 3 키. 4건 삽입하면 루트가 내부 노드로 승격 */
+    bptree_insert(t, 10, 1);
+    bptree_insert(t, 20, 2);
+    bptree_insert(t, 30, 3);
+    CHECK(bptree_search(t, 10) == 1 && bptree_search(t, 20) == 2 && bptree_search(t, 30) == 3,
+          "split 직전 상태: 단일 리프");
+    bptree_insert(t, 40, 4);
+    CHECK(bptree_search(t, 10) == 1, "root grow 후 id=10 조회");
+    CHECK(bptree_search(t, 40) == 4, "root grow 후 id=40 조회");
+    CHECK(bptree_search(t, 25) == -1, "없는 키는 -1");
+    bptree_destroy(t);
+}
+
+static void test_leaf_split_duplicate_after_split(void) {
+    printf("[TEST] split 된 트리에서도 중복 삽입은 덮어쓰기\n");
+    BPTree *t = bptree_create(4);
+    for (int i = 1; i <= 6; ++i) bptree_insert(t, i, i * 10);
+    bptree_insert(t, 3, 999);
+    bptree_insert(t, 6, 777);
+    CHECK(bptree_search(t, 3) == 999, "왼쪽 리프의 중복 키 덮어쓰기");
+    CHECK(bptree_search(t, 6) == 777, "오른쪽 리프의 중복 키 덮어쓰기");
+    CHECK(bptree_search(t, 1) == 10, "무관한 키는 유지");
+    bptree_destroy(t);
+}
+
+/* ---------- Phase 5: internal split + 다단 트리 ---------- */
+
+static void test_internal_split_small_order(void) {
+    printf("[TEST] order=4 로 50건 삽입 (내부 split 여러 번, 트리 3+ 레벨)\n");
+    BPTree *t = bptree_create(4);
+    int n = 50;
+    for (int i = 1; i <= n; ++i) bptree_insert(t, i, i * 3);
+    int ok = 1;
+    for (int i = 1; i <= n; ++i) {
+        if (bptree_search(t, i) != i * 3) ok = 0;
+    }
+    CHECK(ok, "1..50 전수 조회 성공 (내부 split 다수 유발)");
+    bptree_destroy(t);
+}
+
+static void test_internal_split_descending_large(void) {
+    printf("[TEST] order=4 내림차순 80건 삽입\n");
+    BPTree *t = bptree_create(4);
+    int n = 80;
+    for (int i = n; i >= 1; --i) bptree_insert(t, i, -i);
+    int ok = 1;
+    for (int i = 1; i <= n; ++i) {
+        if (bptree_search(t, i) != -i) ok = 0;
+    }
+    CHECK(ok, "내림차순 80건 전수 조회 성공");
+    bptree_destroy(t);
+}
+
+static void test_internal_split_shuffled(void) {
+    printf("[TEST] order=4 뒤섞인 100건 (순열) 삽입\n");
+    BPTree *t = bptree_create(4);
+    int n = 100;
+    int keys[100];
+    /* 간단한 순열: i*37 mod 100 은 gcd(37,100)=1 이라 bijection. */
+    for (int i = 0; i < n; ++i) keys[i] = (i * 37) % n;
+    for (int i = 0; i < n; ++i) bptree_insert(t, keys[i], keys[i] + 1000);
+    int ok = 1;
+    for (int i = 0; i < n; ++i) {
+        if (bptree_search(t, i) != i + 1000) ok = 0;
+    }
+    CHECK(ok, "순열 100건 전수 조회 성공");
+    bptree_destroy(t);
+}
+
+static void test_internal_split_large_scale(void) {
+    printf("[TEST] order=8, 1000 건 삽입 후 전수 검증\n");
+    BPTree *t = bptree_create(8);
+    int n = 1000;
+    for (int i = 0; i < n; ++i) bptree_insert(t, i * 2, i); /* 짝수만 */
+    int ok = 1;
+    for (int i = 0; i < n; ++i) {
+        if (bptree_search(t, i * 2) != i) ok = 0;
+    }
+    CHECK(ok, "짝수 1000건 전수 조회");
+    /* 홀수는 없어야 함 */
+    int not_found_ok = 1;
+    for (int i = 0; i < 20; ++i) {
+        if (bptree_search(t, i * 2 + 1) != -1) not_found_ok = 0;
+    }
+    CHECK(not_found_ok, "삽입 안 한 홀수 키 20개는 -1");
+    bptree_destroy(t);
+}
+
+static void test_internal_split_various_orders(void) {
+    printf("[TEST] order 3,5,16 에서도 200건 삽입이 정상 동작\n");
+    int orders[] = {3, 5, 16};
+    int all_ok = 1;
+    for (int oi = 0; oi < 3; ++oi) {
+        BPTree *t = bptree_create(orders[oi]);
+        for (int i = 0; i < 200; ++i) bptree_insert(t, i, i);
+        for (int i = 0; i < 200; ++i) {
+            if (bptree_search(t, i) != i) { all_ok = 0; break; }
+        }
+        bptree_destroy(t);
+    }
+    CHECK(all_ok, "order 3/5/16 모두 200건 전수 조회 통과");
 }
 
 static void test_insert_null_tree(void) {
@@ -164,7 +312,7 @@ static void test_insert_null_tree(void) {
 }
 
 int main(void) {
-    printf("=== test_bptree (Phase 3) ===\n");
+    printf("=== test_bptree (Phase 5) ===\n");
     test_create_with_valid_order();
     test_create_rejects_tiny_order();
     test_create_accepts_large_order();
@@ -180,6 +328,16 @@ int main(void) {
     test_insert_duplicate_overwrites();
     test_insert_capacity_limit();
     test_insert_null_tree();
+    test_leaf_split_ascending();
+    test_leaf_split_descending();
+    test_leaf_split_mixed_larger();
+    test_leaf_split_root_grows();
+    test_leaf_split_duplicate_after_split();
+    test_internal_split_small_order();
+    test_internal_split_descending_large();
+    test_internal_split_shuffled();
+    test_internal_split_large_scale();
+    test_internal_split_various_orders();
 
     printf("\n[BPTREE TESTS] %d passed, %d failed\n", g_passed, g_failed);
     return g_failed == 0 ? 0 : 1;
