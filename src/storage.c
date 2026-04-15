@@ -155,14 +155,26 @@ static int rowset_alloc(RowSet **out, int row_count, int col_count);
 static int find_max_id_in_csv(const char *table_path, int id_col_index);
 static int count_csv_rows(const char *table_path);
 
-/* 테이블별 next_id 를 관리하기 위한 간이 캐시.
- * MVP 에서는 단일 테이블만 지원해도 충분하므로 크기 1 로 시작. */
+/* 테이블별 next_id 와 B+ 트리 인덱스를 관리하는 간이 캐시. */
 #define MAX_TABLES 16
 static struct {
-    char table[64];
-    int  next_id;
+    char    table[64];
+    int     next_id;
+    BPTree *index;
 } g_id_cache[MAX_TABLES];
 static int g_id_cache_count = 0;
+
+/* 테이블의 B+ 트리 인덱스를 가져온다. 없으면 생성. */
+static BPTree *get_table_index(const char *table)
+{
+    int i;
+    for (i = 0; i < g_id_cache_count; ++i) {
+        if (strcmp(g_id_cache[i].table, table) == 0) {
+            return g_id_cache[i].index;
+        }
+    }
+    return NULL;
+}
 
 /* 입력: 테이블 이름, optional 컬럼 목록, 값 목록, 값 개수
  * 동작: schema를 읽어 INSERT 값을 schema 순서의 row로 정렬한 뒤 CSV에 append
@@ -226,7 +238,7 @@ int storage_insert(const char *table, char **columns, char **values, int count)
 
             need_auto_id = 1;
 
-            /* g_id_cache 에서 테이블의 next_id 조회/초기화 */
+            /* g_id_cache 에서 테이블의 캐시 조회/초기화 */
             for (i = 0; i < g_id_cache_count; ++i) {
                 if (strcmp(g_id_cache[i].table, table) == 0) {
                     cache_idx = i;
@@ -234,16 +246,33 @@ int storage_insert(const char *table, char **columns, char **values, int count)
                 }
             }
 
-            if (cache_idx < 0) {
-                /* 최초 INSERT — CSV 에서 max id 를 읽어 초기화 */
+            {
+                /* 항상 CSV 에서 max id 를 읽어 next_id 를 결정.
+                 * 캐시된 값과 비교해서 더 큰 쪽 + 1 을 사용. */
                 int max_id = find_max_id_in_csv(table_path, id_col_index);
-                if (g_id_cache_count < MAX_TABLES) {
-                    cache_idx = g_id_cache_count++;
-                    snprintf(g_id_cache[cache_idx].table,
-                             sizeof(g_id_cache[cache_idx].table), "%s", table);
-                    g_id_cache[cache_idx].next_id = max_id + 1;
+
+                if (cache_idx < 0) {
+                    if (g_id_cache_count < MAX_TABLES) {
+                        cache_idx = g_id_cache_count++;
+                        snprintf(g_id_cache[cache_idx].table,
+                                 sizeof(g_id_cache[cache_idx].table), "%s", table);
+                        g_id_cache[cache_idx].next_id = max_id + 1;
+                        g_id_cache[cache_idx].index = bptree_create(4);
+                    } else {
+                        goto cleanup;
+                    }
                 } else {
-                    goto cleanup;
+                    /* 캐시가 있어도 CSV 상태와 동기화 */
+                    int csv_next = max_id + 1;
+                    if (csv_next > g_id_cache[cache_idx].next_id) {
+                        g_id_cache[cache_idx].next_id = csv_next;
+                    }
+                    if (g_id_cache[cache_idx].next_id > csv_next) {
+                        /* CSV 가 초기화됨 (삭제 후 재생성 등) — CSV 기준으로 리셋 */
+                        if (max_id == 0) {
+                            g_id_cache[cache_idx].next_id = 1;
+                        }
+                    }
                 }
             }
 
@@ -288,15 +317,59 @@ int storage_insert(const char *table, char **columns, char **values, int count)
         }
     }
 
-    status = append_csv_row(table_path, row, schema_count);
+    /* row_idx: 현재 CSV 행 수 = 새 행이 저장될 0-based 인덱스 */
+    {
+        int row_idx = count_csv_rows(table_path);
 
-    /* 성공 시 next_id 증가 */
-    if (status == 0 && need_auto_id) {
-        int i;
-        for (i = 0; i < g_id_cache_count; ++i) {
-            if (strcmp(g_id_cache[i].table, table) == 0) {
-                g_id_cache[i].next_id++;
-                break;
+        status = append_csv_row(table_path, row, schema_count);
+
+        /* 성공 시 B+ 트리에 (id, row_idx) 등록 + next_id 증가 */
+        if (status == 0 && id_col_index >= 0) {
+            int inserted_id;
+            BPTree *tree;
+
+            if (need_auto_id) {
+                inserted_id = auto_id;
+            } else {
+                /* 사용자가 직접 넣은 id — row 에서 꺼냄 */
+                inserted_id = atoi(row[id_col_index]);
+            }
+
+            /* 캐시에 트리가 없으면 생성 (columns==NULL 이라 auto-id 안 탔을 때) */
+            tree = get_table_index(table);
+            if (tree == NULL) {
+                int i;
+                int cache_idx = -1;
+                for (i = 0; i < g_id_cache_count; ++i) {
+                    if (strcmp(g_id_cache[i].table, table) == 0) {
+                        cache_idx = i;
+                        break;
+                    }
+                }
+                if (cache_idx < 0 && g_id_cache_count < MAX_TABLES) {
+                    cache_idx = g_id_cache_count++;
+                    snprintf(g_id_cache[cache_idx].table,
+                             sizeof(g_id_cache[cache_idx].table), "%s", table);
+                    g_id_cache[cache_idx].next_id = inserted_id + 1;
+                    g_id_cache[cache_idx].index = bptree_create(4);
+                }
+                if (cache_idx >= 0) {
+                    tree = g_id_cache[cache_idx].index;
+                }
+            }
+
+            if (tree) {
+                bptree_insert(tree, inserted_id, row_idx);
+            }
+
+            if (need_auto_id) {
+                int i;
+                for (i = 0; i < g_id_cache_count; ++i) {
+                    if (strcmp(g_id_cache[i].table, table) == 0) {
+                        g_id_cache[i].next_id++;
+                        break;
+                    }
+                }
             }
         }
     }
@@ -943,7 +1016,7 @@ static int find_max_id_in_csv(const char *table_path, int id_col_index)
         return 0;
     }
 
-    while (read_csv_record(fp, &record) == 0 && record != NULL) {
+    while (read_csv_record(fp, &record) == 1) {
         char **fields = NULL;
         int field_count = 0;
 
@@ -960,7 +1033,6 @@ static int find_max_id_in_csv(const char *table_path, int id_col_index)
         record = NULL;
     }
 
-    free(record);
     fclose(fp);
     return max_id;
 }
@@ -977,13 +1049,12 @@ static int count_csv_rows(const char *table_path)
         return 0;
     }
 
-    while (read_csv_record(fp, &record) == 0 && record != NULL) {
+    while (read_csv_record(fp, &record) == 1) {
         count++;
         free(record);
         record = NULL;
     }
 
-    free(record);
     fclose(fp);
     return count;
 }
