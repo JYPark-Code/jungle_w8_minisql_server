@@ -97,20 +97,9 @@ void bptree_destroy(BPTree *tree) {
     free(tree);
 }
 
-void bptree_insert(BPTree *tree, int id, int row_index) {
-    (void)tree;
-    (void)id;
-    (void)row_index;
-    /* Phase 3 에서 구현. */
-}
-
 /* 내부 노드에서 id 키가 속할 자식 인덱스 반환.
  *
- * 규약: keys[i-1] <= id < keys[i] 인 i 를 찾아 children[i] 로 내려간다.
- *   - id < keys[0]              → 0
- *   - keys[i-1] <= id < keys[i] → i
- *   - id >= keys[num_keys-1]    → num_keys
- * 선형 스캔으로 구현. 차수가 크지 않을 때 이진 탐색보다 오버헤드 작음. */
+ * 규약: keys[i-1] <= id < keys[i] 인 i 를 찾아 children[i] 로 내려간다. */
 static int internal_child_idx(const Node *n, int id) {
     assert(!n->is_leaf);
     int i = 0;
@@ -118,6 +107,44 @@ static int internal_child_idx(const Node *n, int id) {
         ++i;
     }
     return i;
+}
+
+/* 리프 노드에 정렬 상태를 유지하며 (id, row_index) 삽입.
+ *
+ * 규약:
+ *   - 이미 동일 id 가 있으면 row_index 를 덮어쓴다 (중복 방지).
+ *   - 리프 용량 (order - 1) 에 도달하지 않은 경우에만 삽입.
+ *     full 이면 0 반환 — 호출자가 split 을 수행해야 한다 (Phase 4).
+ *
+ * 반환: 1=삽입/덮어쓰기 성공, 0=공간 부족. */
+static int leaf_insert_nonfull(Node *leaf, int order, int id, int row_index) {
+    assert(leaf->is_leaf);
+    int i = 0;
+    while (i < leaf->num_keys && leaf->keys[i] < id) ++i;
+    if (i < leaf->num_keys && leaf->keys[i] == id) {
+        leaf->u.leaf.row_indices[i] = row_index;
+        return 1;
+    }
+    if (leaf->num_keys >= order - 1) return 0;
+    for (int j = leaf->num_keys; j > i; --j) {
+        leaf->keys[j] = leaf->keys[j - 1];
+        leaf->u.leaf.row_indices[j] = leaf->u.leaf.row_indices[j - 1];
+    }
+    leaf->keys[i] = id;
+    leaf->u.leaf.row_indices[i] = row_index;
+    ++leaf->num_keys;
+    return 1;
+}
+
+void bptree_insert(BPTree *tree, int id, int row_index) {
+    if (!tree || !tree->root) return;
+    Node *cur = tree->root;
+    while (!cur->is_leaf) {
+        cur = cur->u.internal.children[internal_child_idx(cur, id)];
+    }
+    /* Phase 3: split 없는 삽입. 리프가 가득 차면 현재 insert 는 무시.
+     * Phase 4 에서 leaf split 추가 시 full 분기를 대체. */
+    (void)leaf_insert_nonfull(cur, tree->order, id, row_index);
 }
 
 int bptree_search(BPTree *tree, int id) {
