@@ -10,7 +10,8 @@ SRCS    = $(SRC_DIR)/main.c \
           $(SRC_DIR)/json_out.c \
           $(SRC_DIR)/sql_format.c \
           $(SRC_DIR)/executor.c \
-          $(SRC_DIR)/storage.c
+          $(SRC_DIR)/storage.c \
+          $(SRC_DIR)/bptree.c
 
 TEST_SRCS = $(TEST_DIR)/test_parser.c \
             $(TEST_DIR)/test_executor.c \
@@ -27,8 +28,18 @@ SELECT_RESULT_DEPS = $(SRC_DIR)/storage.c $(SRC_DIR)/parser.c
 
 TARGET  = sqlparser
 TEST_TARGET = test_runner
+BENCH_DIR = bench
+BENCH_TARGET = benchmark
+BENCH_SRCS = $(BENCH_DIR)/benchmark.c \
+             $(SRC_DIR)/bptree.c \
+             $(SRC_DIR)/storage.c \
+             $(SRC_DIR)/parser.c \
+             $(SRC_DIR)/ast_print.c \
+             $(SRC_DIR)/json_out.c \
+             $(SRC_DIR)/sql_format.c \
+             $(SRC_DIR)/executor.c
 
-.PHONY: all clean test valgrind test_storage_all
+.PHONY: all clean test valgrind test_storage_all bench
 
 all: $(TARGET)
 
@@ -63,8 +74,14 @@ test: $(TEST_TARGET)
 valgrind: $(TARGET)
 	valgrind --leak-check=full --error-exitcode=1 ./$(TARGET) $(SQL)
 
+bench: $(BENCH_TARGET)
+	./$(BENCH_TARGET)
+
+$(BENCH_TARGET): $(BENCH_SRCS)
+	$(CC) $(CFLAGS) -o $@ $^
+
 clean:
-	rm -f $(TARGET) $(TEST_TARGET) $(STORAGE_TEST_TARGETS)
+	rm -f $(TARGET) $(TEST_TARGET) $(STORAGE_TEST_TARGETS) $(BENCH_TARGET)
 	rm -f data/*.csv data/*.schema
 	rm -f data/schema/*.schema data/tables/*.csv data/tables/*.csv.tmp
 
