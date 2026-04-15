@@ -153,7 +153,6 @@ static int evaluate_aggregate(const char *fn, int col_index, ColumnType type,
 static int rowset_alloc(RowSet **out, int row_count, int col_count);
 
 /* ─── Week 7: auto-increment id ─────────────────────────────── */
-static int find_max_id_in_csv(const char *table_path, int id_col_index);
 static int count_csv_rows(const char *table_path);
 static void scan_csv_meta(const char *table_path, int id_col_index,
                            int *out_max_id, int *out_row_count);
@@ -985,40 +984,6 @@ static int build_row_in_schema_order(const ColDef *schema, int schema_count,
 }
 
 /* ─── Week 7: auto-id 헬퍼 ──────────────────────────────────── */
-
-/* CSV 파일에서 id_col_index 번째 컬럼의 최대 정수 값을 반환.
- * 파일이 비어있거나 열 수 없으면 0 반환 (next_id 가 1 부터 시작). */
-static int find_max_id_in_csv(const char *table_path, int id_col_index)
-{
-    FILE *fp;
-    int max_id = 0;
-    char *record = NULL;
-
-    fp = fopen(table_path, "r");
-    if (fp == NULL) {
-        return 0;
-    }
-
-    while (read_csv_record(fp, &record) == 1) {
-        char **fields = NULL;
-        int field_count = 0;
-
-        if (parse_csv_record(record, &fields, &field_count) == 0) {
-            if (id_col_index < field_count && fields[id_col_index] != NULL) {
-                int val = atoi(fields[id_col_index]);
-                if (val > max_id) {
-                    max_id = val;
-                }
-            }
-            free_string_array(fields, field_count);
-        }
-        free(record);
-        record = NULL;
-    }
-
-    fclose(fp);
-    return max_id;
-}
 
 /* CSV 파일의 행 수를 반환 (row_index 계산용). */
 static int count_csv_rows(const char *table_path)
