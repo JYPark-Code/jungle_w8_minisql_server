@@ -1,5 +1,6 @@
 #include "types.h"
 #include "bptree.h"
+#include "index_registry.h"
 
 #include <errno.h>
 #include <stdio.h>
@@ -30,11 +31,10 @@
 #define USERS_NESTED_SCHEMA_PATH DATA_SCHEMA_DIR "/users.schema"
 #define USERS_NESTED_CSV_PATH DATA_TABLES_DIR "/users.csv"
 
-extern BPTree *g_tree;
-
 static int fake_bptree_search_calls = 0;
 static int fake_bptree_last_id = -1;
 static int fake_bptree_result = -1;
+static BPTree *fake_registry_tree = NULL;
 
 int bptree_search(BPTree *tree, int id)
 {
@@ -44,12 +44,21 @@ int bptree_search(BPTree *tree, int id)
     return fake_bptree_result;
 }
 
+BPTree *index_registry_get(const char *table)
+{
+    if (table == NULL || strcmp(table, "users") != 0) {
+        return NULL;
+    }
+
+    return fake_registry_tree;
+}
+
 static void reset_fake_bptree(int search_result)
 {
     fake_bptree_search_calls = 0;
     fake_bptree_last_id = -1;
     fake_bptree_result = search_result;
-    g_tree = (BPTree *)0x1;
+    fake_registry_tree = (BPTree *)0x1;
 }
 
 static char *duplicate_string(const char *source)
@@ -578,7 +587,7 @@ int run_executor_tests(void)
 
 cleanup:
     cleanup_fixture_files();
-    g_tree = NULL;
+    fake_registry_tree = NULL;
     if (status == 0) {
         fprintf(stderr, "[EXECUTOR TESTS] passed\n");
     }

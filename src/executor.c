@@ -21,7 +21,7 @@
  */
 
 #include "types.h"
-#include "bptree.h"
+#include "index_registry.h"
 
 #include <ctype.h>
 #include <errno.h>
@@ -32,10 +32,6 @@
 
 #define EXECUTOR_PATH_MAX 512
 #define EXECUTOR_LINE_MAX 512
-
-/* storage 쪽이 채워 넣는 전역 인덱스 핸들.
- * Week 7 에서는 executor 가 WHERE id = ? 최적화에서만 읽는다. */
-BPTree *g_tree = NULL;
 
 static int executor_try_indexed_select(const char *table, ParsedSQL *sql);
 static int executor_should_use_id_index(const ParsedSQL *sql);
@@ -120,6 +116,7 @@ static int executor_try_indexed_select(const char *table, ParsedSQL *sql)
 {
     char schema_path[EXECUTOR_PATH_MAX];
     char table_path[EXECUTOR_PATH_MAX];
+    BPTree *tree;
     ColDef *schema = NULL;
     int schema_count = 0;
     char **row = NULL;
@@ -128,11 +125,16 @@ static int executor_try_indexed_select(const char *table, ParsedSQL *sql)
     int row_index;
     int handled = -1;
 
-    if (!executor_should_use_id_index(sql) || g_tree == NULL) {
+    if (!executor_should_use_id_index(sql)) {
         return -1;
     }
 
     if (executor_parse_lookup_id(&sql->where[0], &lookup_id) != 0) {
+        return -1;
+    }
+
+    tree = index_registry_get(table);
+    if (tree == NULL) {
         return -1;
     }
 
@@ -150,7 +152,7 @@ static int executor_try_indexed_select(const char *table, ParsedSQL *sql)
         goto cleanup;
     }
 
-    row_index = bptree_search(g_tree, lookup_id);
+    row_index = bptree_search(tree, lookup_id);
     if (row_index >= 0 &&
         executor_load_row_at_index(table_path, row_index, schema_count, &row) != 0) {
         goto cleanup;
