@@ -1,3 +1,8 @@
+/* pthread_rwlock_* 는 POSIX feature test macro 가 노출되어야 선언됨.
+ * CI 가 -D_POSIX_C_SOURCE 없이 Makefile CFLAGS 를 덮어쓰는 경우 대비해
+ * 파일 단위에서 선언 (engine_lock.c / threadpool.c / main.c 와 동일 패턴). */
+#define _POSIX_C_SOURCE 200809L
+
 #include "dict_cache.h"
 
 #include <pthread.h>
