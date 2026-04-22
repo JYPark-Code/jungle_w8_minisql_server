@@ -59,6 +59,7 @@ SELECT_RESULT_DEPS   = $(SRC_DIR)/storage.c $(SRC_DIR)/parser.c $(SRC_DIR)/bptre
 BPTREE_TEST_DEPS     = $(SRC_DIR)/bptree.c
 BENCH_TEST_DEPS      = $(SRC_DIR)/bptree.c
 REGISTRY_TEST_DEPS   = $(SRC_DIR)/index_registry.c $(SRC_DIR)/bptree.c
+THREADPOOL_TEST_DEPS = $(SRC_DIR)/threadpool.c
 
 STORAGE_TEST_TARGETS = test_storage_insert test_storage_delete \
                        test_storage_update test_storage_select_result
@@ -76,7 +77,7 @@ BENCH_SRCS   = $(BENCH_DIR)/benchmark.c $(W7_SRCS)
 # ---------------------------------------------------------------------------
 .PHONY: all clean test tsan valgrind bench loadtest \
         test_storage_all \
-        test_bptree test_benchmark test_index_registry
+        test_bptree test_benchmark test_index_registry test_threadpool
 
 # ---------------------------------------------------------------------------
 # 기본 빌드 — 데몬
@@ -99,7 +100,7 @@ $(DAEMON_TSAN): $(DAEMON_SRCS)
 # ---------------------------------------------------------------------------
 # 회귀 테스트 (W7 + 추후 W8)
 # ---------------------------------------------------------------------------
-test: $(TEST_PARSER_EXEC) test_storage_all test_bptree test_benchmark test_index_registry
+test: $(TEST_PARSER_EXEC) test_storage_all test_bptree test_benchmark test_index_registry test_threadpool
 	./$(TEST_PARSER_EXEC)
 
 $(TEST_PARSER_EXEC): $(TEST_PARSER_EXEC_SRCS)
@@ -135,16 +136,22 @@ test_index_registry: $(TEST_DIR)/test_index_registry.c $(REGISTRY_TEST_DEPS)
 	$(CC) $(CFLAGS) -o $@ $^ $(LDFLAGS)
 	./$@
 
+test_threadpool: $(TEST_DIR)/test_threadpool.c $(THREADPOOL_TEST_DEPS)
+	$(CC) $(CFLAGS) -o $@ $^ $(LDFLAGS)
+	./$@
+
 # ---------------------------------------------------------------------------
 # valgrind — W7 테스트 바이너리 회귀 (데몬은 상주형이라 미포함)
 # ---------------------------------------------------------------------------
-valgrind: $(TEST_PARSER_EXEC) $(STORAGE_TEST_TARGETS) test_bptree test_benchmark test_index_registry
+valgrind: $(TEST_PARSER_EXEC) $(STORAGE_TEST_TARGETS) test_bptree test_benchmark test_index_registry test_threadpool
 	@echo "=== valgrind: parser/executor ==="
 	valgrind --leak-check=full --error-exitcode=1 --quiet ./$(TEST_PARSER_EXEC)
 	@echo "=== valgrind: storage_insert ==="
 	valgrind --leak-check=full --error-exitcode=1 --quiet ./test_storage_insert
 	@echo "=== valgrind: bptree ==="
 	valgrind --leak-check=full --error-exitcode=1 --quiet ./test_bptree
+	@echo "=== valgrind: threadpool ==="
+	valgrind --leak-check=full --error-exitcode=1 --quiet ./test_threadpool
 
 # ---------------------------------------------------------------------------
 # B+Tree pure 벤치 (W7 자산)
@@ -168,7 +175,7 @@ loadtest:
 clean:
 	rm -f $(DAEMON) $(DAEMON_TSAN) \
 	      $(TEST_PARSER_EXEC) $(STORAGE_TEST_TARGETS) \
-	      test_bptree test_benchmark test_index_registry \
+	      test_bptree test_benchmark test_index_registry test_threadpool \
 	      $(BENCH_TARGET) tree_shape
 	rm -rf data/*.csv data/*.schema
 	rm -rf data/schema data/tables
