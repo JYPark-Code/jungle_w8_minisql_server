@@ -499,7 +499,11 @@ double threadpool_get_utilization(const threadpool_t *tp) {
     int active = tp->active_workers;
     pthread_mutex_unlock((pthread_mutex_t *)&tp->mutex);
 
-    return (cur_n > 0) ? ((double)active / (double)cur_n) : 0.0;
+    double u = (cur_n > 0) ? ((double)active / (double)cur_n) : 0.0;
+    /* shrink 직후 퇴장 대기 worker 가 진행 중 job 을 처리하는 짧은 윈도우에서
+     * active > n_workers 가 되어 1.0 을 넘을 수 있음. 계약 (0.0~1.0) 유지. */
+    if (u > 1.0) u = 1.0;
+    return u;
 }
 
 int threadpool_active_workers(const threadpool_t *tp) {
