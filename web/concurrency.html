@@ -736,14 +736,17 @@
     return "실패: status " + result.status;
   }
 
-  /* /api/dict 응답의 engine.rows (배열의 배열) + columns → [{english, korean}, ...] */
+  /* /api/dict 응답은 engine.statements[0].columns / .rows 구조.
+   * 이전 구현은 engine.columns / engine.rows 를 보고 있어 항상 빈 배열
+   * (검색 결과가 화면에 안 나오는 증상의 원인). */
   function extractRows(responseJson) {
     const engine = responseJson && responseJson.engine;
-    if (!engine || !Array.isArray(engine.columns) || !Array.isArray(engine.rows)) {
+    const stmt = engine && Array.isArray(engine.statements) ? engine.statements[0] : null;
+    if (!stmt || !Array.isArray(stmt.columns) || !Array.isArray(stmt.rows)) {
       return [];
     }
-    const cols = engine.columns;
-    return engine.rows.map(function (arr) {
+    const cols = stmt.columns;
+    return stmt.rows.map(function (arr) {
       const obj = {};
       for (let i = 0; i < cols.length; i++) {
         obj[cols[i]] = Array.isArray(arr) ? arr[i] : undefined;
