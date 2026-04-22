@@ -16,7 +16,6 @@ test_storage_select_result
 test_bptree
 test_benchmark
 benchmark
-data/
 CLAUDE_jiyong.md
 test_index_registry
 tree_shape
