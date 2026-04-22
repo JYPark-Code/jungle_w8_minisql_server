@@ -973,7 +973,7 @@
     contentionStatus.textContent = "reader " + r + " / writer " + w + " 실행 중…";
 
     /* reader 는 apple 고정 — 캐시 히트 포함 읽기 부하를 만들기 위함 */
-    const readerPath = "/api/dict?english=apple";
+    const readerPath = "/api/dict?english=apple&nocache=1";
     const readerJobs = [];
     for (let i = 0; i < r; i++) readerJobs.push(tracedFetch("GET", readerPath));
 
