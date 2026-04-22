@@ -8,6 +8,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include <sys/stat.h>
+#include <time.h>
 
 #define DICT_CACHE_CAPACITY 1024
 #define AUTOCOMPLETE_DEFAULT_LIMIT 5
@@ -30,6 +31,13 @@ static dict_cache_t *router_dict_cache(void) {
 
 static int method_is(const http_request_t *req, const char *method) {
     return req && strcmp(req->method, method) == 0;
+}
+
+static double router_now_ms(void) {
+    struct timespec ts;
+
+    clock_gettime(CLOCK_MONOTONIC, &ts);
+    return (double)ts.tv_sec * 1000.0 + (double)ts.tv_nsec / 1000000.0;
 }
 
 static int query_has_single_mode(const char *query) {
@@ -447,7 +455,8 @@ static int build_admin_insert_response(const char *english,
 }
 
 static int wrap_dict_response(int ok, const char *mode, const char *query, int cache_hit,
-                              const char *engine_json, char **out_json) {
+                              double cache_lookup_ms, const char *engine_json,
+                              char **out_json) {
     const char *prefix = "{\"ok\":";
     char query_buf[512];
     size_t query_off = 0;
@@ -461,6 +470,7 @@ static int wrap_dict_response(int ok, const char *mode, const char *query, int c
 
     needed = strlen(prefix) + strlen(ok ? "true" : "false") +
              strlen(",\"cache_hit\":") + strlen(cache_hit ? "true" : "false") +
+             strlen(",\"cache_lookup_ms\":") + 32U +
              strlen(",\"mode\":\"") + strlen(mode) +
              strlen("\",\"query\":\"") + strlen(query_buf) +
              strlen("\",\"engine\":") + strlen(engine_json) +
@@ -469,9 +479,9 @@ static int wrap_dict_response(int ok, const char *mode, const char *query, int c
     json = malloc(needed);
     if (json == NULL) return -1;
     snprintf(json, needed,
-             "%s%s,\"cache_hit\":%s,\"mode\":\"%s\",\"query\":\"%s\",\"engine\":%s}",
+             "%s%s,\"cache_hit\":%s,\"cache_lookup_ms\":%.6f,\"mode\":\"%s\",\"query\":\"%s\",\"engine\":%s}",
              prefix, ok ? "true" : "false", cache_hit ? "true" : "false",
-             mode, query_buf, engine_json);
+             cache_lookup_ms, mode, query_buf, engine_json);
     *out_json = json;
     return 0;
 }
@@ -603,6 +613,8 @@ static int handle_dict_request(const http_request_t *req, http_response_t *resp)
     const char *query;
     char nocache_param[8] = {0};
     int bypass_cache;
+    int cache_found = 0;
+    double cache_lookup_ms = 0.0;
 
     if (!method_is(req, "GET")) {
         return set_body(resp, 405, "application/json",
@@ -660,7 +672,8 @@ static int handle_dict_request(const http_request_t *req, http_response_t *resp)
                 "{\"ok\":false,\"error\":\"warming_up\",\"retry_after_ms\":500}");
         }
         result = engine_exec_sql(sql, false);
-        if (wrap_dict_response(result.ok, "korean", korean, 0, result.json ? result.json : "{}", &response_json) != 0) {
+        if (wrap_dict_response(result.ok, "korean", korean, 0, cache_lookup_ms,
+                               result.json ? result.json : "{}", &response_json) != 0) {
             engine_result_free(&result);
             return set_body(resp, 500, "application/json",
                             "{\"ok\":false,\"error\":\"response_too_large\"}");
@@ -672,8 +685,15 @@ static int handle_dict_request(const http_request_t *req, http_response_t *resp)
                         "{\"ok\":false,\"error\":\"missing_query\"}");
     }
 
-    if (!bypass_cache && dict_cache_get(cache, key, &cached_json)) {
-        if (wrap_dict_response(1, mode, query, 1, cached_json, &response_json) != 0) {
+    if (!bypass_cache) {
+        double cache_lookup_started = router_now_ms();
+        cache_found = dict_cache_get(cache, key, &cached_json);
+        cache_lookup_ms = router_now_ms() - cache_lookup_started;
+    }
+
+    if (cache_found) {
+        if (wrap_dict_response(1, mode, query, 1, cache_lookup_ms,
+                               cached_json, &response_json) != 0) {
             free(cached_json);
             return set_body(resp, 500, "application/json",
                             "{\"ok\":false,\"error\":\"response_too_large\"}");
@@ -691,7 +711,8 @@ static int handle_dict_request(const http_request_t *req, http_response_t *resp)
     }
 
     result = engine_exec_sql(sql, false);
-    if (wrap_dict_response(result.ok, mode, query, 0, result.json ? result.json : "{}", &response_json) != 0) {
+    if (wrap_dict_response(result.ok, mode, query, 0, cache_lookup_ms,
+                           result.json ? result.json : "{}", &response_json) != 0) {
         engine_result_free(&result);
         return set_body(resp, 500, "application/json",
                         "{\"ok\":false,\"error\":\"response_too_large\"}");

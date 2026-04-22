@@ -265,11 +265,13 @@ static void test_admin_insert_invalidates_dict_cache(void)
     resp = dispatch_request("GET", "/api/dict", "english=cacheword", NULL);
     CHECK(resp.status == 200, "first dict lookup returns 200");
     CHECK(response_has(&resp, "\"cache_hit\":false"), "first dict lookup misses cache");
+    CHECK(response_has(&resp, "\"cache_lookup_ms\":"), "first dict lookup includes cache timing");
     response_free(&resp);
 
     resp = dispatch_request("GET", "/api/dict", "english=cacheword", NULL);
     CHECK(resp.status == 200, "second dict lookup returns 200");
     CHECK(response_has(&resp, "\"cache_hit\":true"), "second dict lookup hits cache");
+    CHECK(response_has(&resp, "\"cache_lookup_ms\":"), "second dict lookup includes cache timing");
     response_free(&resp);
 
     resp = dispatch_request("POST", "/api/admin/insert", "",
@@ -281,6 +283,7 @@ static void test_admin_insert_invalidates_dict_cache(void)
     CHECK(resp.status == 200, "dict lookup after insert returns 200");
     CHECK(response_has(&resp, "\"cache_hit\":false"),
           "dict lookup misses cache after insert invalidation");
+    CHECK(response_has(&resp, "\"cache_lookup_ms\":"), "post-invalidation lookup includes cache timing");
     response_free(&resp);
 
     engine_shutdown();
