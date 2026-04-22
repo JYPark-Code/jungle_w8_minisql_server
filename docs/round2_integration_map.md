@@ -27,13 +27,14 @@
 cache 가 router 로 이전되면서 engine.c 에서 **동현 의 zone 은 제거**.
 용 만 engine.c 를 건드린다.
 
-### Zone T1 — trie prefix dispatcher (용)
-**함수**: `execute_select()` (현재 line 572)
-**위치**: `should_use_id_index()` / `should_use_id_range()` 판정 바로 뒤.
-기존 B+Tree 분기 앞에 새 판정 함수 `should_use_trie_prefix()` 추가
-**제약**: Trie 는 **ASCII 소문자 영어 only** 로 인덱스된 상태. 한글 body
-조회 (역방향) 는 이 경로 타지 않고 기존 선형 탐색 fallback 유지
-**삽입 예**:
+### Zone T1 — trie prefix dispatcher (용) — **PR #16 에서 구현 확정**
+**함수**: `execute_select()`
+**판정 함수**: `should_use_trie_prefix(sql, prefix_buf, prefix_buf_size)` —
+`dictionary` 테이블의 `WHERE english LIKE 'xxx%'` 형태만 인정, prefix 를
+out-param 으로 반환 (extract 를 판정과 결합)
+**제약**: Trie 는 **lowercase ASCII a-z only**. 한글 body 조회 (역방향)
+및 wildcard/invalid LIKE 는 이 경로 타지 않고 기존 선형 탐색 fallback 유지
+**실제 삽입 형태** (PR #16 기준):
 ```c
 static int execute_select(ParsedSQL *sql, json_buf_t *out,
                           bool *out_index_used, int *out_nodes_visited) {
@@ -47,14 +48,16 @@ static int execute_select(ParsedSQL *sql, json_buf_t *out,
         ...
     }
     /* ROUND2-T1: trie prefix 경로 (용) */
-    if (should_use_trie_prefix(sql)) {
-        int out_rows[MAX_TRIE_OUT];
-        const char *prefix = extract_prefix(sql);  /* ASCII 가정 */
-        int n = trie_search_prefix(s_trie, prefix, out_rows, MAX_TRIE_OUT);
-        *out_index_used = true;
-        *out_nodes_visited = n;
+    char prefix[DICTIONARY_TRIE_MAX_WORD + 1];
+    if (should_use_trie_prefix(sql, prefix, sizeof(prefix))) {
+        int *row_indices = malloc(sizeof(*row_indices) * DICTIONARY_TRIE_MAX_ROWS);
+        int count = trie_search_prefix(s_dictionary_trie, prefix,
+                                       row_indices, DICTIONARY_TRIE_MAX_ROWS);
+        qsort(row_indices, (size_t)count, sizeof(int), int_compare);
         /* storage_select_result_by_row_indices(...) 경유 JSON 직렬화 */
-        ...
+        if (out_index_used)    *out_index_used = true;
+        if (out_nodes_visited) *out_nodes_visited = (int)strlen(prefix);
+        free(row_indices);
         return 0;
     }
     /* 기존 선형 탐색 fallback
@@ -63,25 +66,31 @@ static int execute_select(ParsedSQL *sql, json_buf_t *out,
 }
 ```
 
-### Zone IT — init / teardown (용 단독)
-**함수**: `engine_init()` (line 92) 끝부분, `engine_shutdown()` (line 292) 첫부분
-**목적**: `s_trie` 전역 인스턴스 생성 · 해제
-**삽입 예**:
+추가: `engine_explain()` 도 `TRIE_PREFIX_SCAN` 표시를 반환하도록 확장됨.
+또한 `dictionary` 테이블에 대한 INSERT/UPDATE/DELETE 성공 후 Trie 를 **전체
+rebuild** (`dictionary_trie_refresh_after_write`) — 단순한 정책. 단어 수가
+늘어나면 증분 삽입으로 교체 검토.
+
+### Zone IT — init / teardown (용 단독) — **PR #16 에서 구현 확정**
+**함수**: `engine_init()` 끝부분, `engine_shutdown()` 첫부분
+**목적**: `s_dictionary_trie` 전역 인스턴스 생성 · 해제. 이름에 `dictionary`
+프리픽스 를 붙여 trie 가 범용이 아니라 특정 테이블 전용임을 명시
+**실제 삽입 형태** (PR #16 기준):
 ```c
 int engine_init(const char *data_dir) {
     (void)data_dir;
     atomic_store_explicit(&s_total_queries, 0, memory_order_relaxed);
     if (engine_lock_init() != 0) return -1;
     /* ROUND2-IT: trie 초기화 (용) */
-    s_trie = trie_create();            if (!s_trie) return -1;
-    /* dictionary 테이블 로드 후 각 row 의 english 컬럼을 trie 에 삽입
-     * — 구현 상세는 용 담당 */
+    s_dictionary_trie = trie_create();
+    if (s_dictionary_trie == NULL) { engine_lock_shutdown(); return -1; }
+    /* 기동 시 dictionary 테이블이 존재하면 rebuild 호출로 채움 */
     return 0;
 }
 
 void engine_shutdown(void) {
     /* ROUND2-IT: 역순 해제 */
-    if (s_trie) { trie_destroy(s_trie); s_trie = NULL; }
+    dictionary_trie_replace(NULL, 0);   /* s_dictionary_trie 를 NULL 로 교체 */
     engine_lock_shutdown();
 }
 ```

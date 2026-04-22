@@ -208,7 +208,7 @@ Round 1 (1차 mix-merge 머지 완료) 위에 얹는 4 개 항목. 각 항목은
     소문자 a-z). compressed trie 는 Round 2 범위 외
   - 인덱스 대상: `dictionary.english` 컬럼 만. 한글 body 는 인덱스 대상
     아님
-  - 노드에 `row_id` 저장 (단어 끝 노드만 non-null) + 26 개 자식 포인터
+  - 노드에 `row_index` 저장 (storage CSV 0-based, 단어 끝 노드만 non-null) + 26 개 자식 포인터
   - 삽입: `O(k)` (k = word 길이)
   - 정확 매칭: `O(k)` — 없으면 -1
   - prefix 매칭: `O(k + m)` (m = prefix 로 시작하는 단어 수,
@@ -323,16 +323,17 @@ typedef struct trie trie_t;
 trie_t *trie_create(void);
 void    trie_destroy(trie_t *t);
 
-/* word: 소문자 ASCII 가정, NUL-terminated. row_id >= 0 */
-int     trie_insert(trie_t *t, const char *word, int row_id);
+/* word: lowercase ASCII a-z 만 허용, NUL-terminated. row_index >= 0
+ * (storage CSV 의 0-based row index, SQL id 컬럼 아님). 같은 word 는 덮어씀. */
+int trie_insert(trie_t *t, const char *word, int row_index);
 
-/* 정확 매칭: row_id 반환, 없으면 -1 */
-int     trie_search_exact(const trie_t *t, const char *word);
+/* 정확 매칭: row_index 반환, 없으면 -1. */
+int trie_search_exact(const trie_t *t, const char *word);
 
-/* prefix 로 시작하는 row_id 를 최대 max_out 개까지 out 에 채움.
- * return = 실제 채운 개수 */
-int     trie_search_prefix(const trie_t *t, const char *prefix,
-                           int *out_row_ids, int max_out);
+/* prefix 로 시작하는 row_index 를 최대 max_out 개까지 out 에 채움.
+ * return = 실제 채운 개수. */
+int trie_search_prefix(const trie_t *t, const char *prefix,
+                       int *out_row_indices, int max_out);
 
 #endif
 ```
