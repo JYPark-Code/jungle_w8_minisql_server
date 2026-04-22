@@ -76,7 +76,7 @@ BENCH_SRCS   = $(BENCH_DIR)/benchmark.c $(W7_SRCS)
 # ---------------------------------------------------------------------------
 .PHONY: all clean test tsan valgrind bench loadtest \
         test_storage_all \
-        test_bptree test_benchmark test_index_registry
+        test_bptree test_benchmark test_index_registry test_engine_lock
 
 # ---------------------------------------------------------------------------
 # 기본 빌드 — 데몬
@@ -99,7 +99,7 @@ $(DAEMON_TSAN): $(DAEMON_SRCS)
 # ---------------------------------------------------------------------------
 # 회귀 테스트 (W7 + 추후 W8)
 # ---------------------------------------------------------------------------
-test: $(TEST_PARSER_EXEC) test_storage_all test_bptree test_benchmark test_index_registry
+test: $(TEST_PARSER_EXEC) test_storage_all test_bptree test_benchmark test_index_registry test_engine_lock
 	./$(TEST_PARSER_EXEC)
 
 $(TEST_PARSER_EXEC): $(TEST_PARSER_EXEC_SRCS)
@@ -135,16 +135,22 @@ test_index_registry: $(TEST_DIR)/test_index_registry.c $(REGISTRY_TEST_DEPS)
 	$(CC) $(CFLAGS) -o $@ $^ $(LDFLAGS)
 	./$@
 
+test_engine_lock: $(TEST_DIR)/test_engine_lock.c $(SRC_DIR)/engine_lock.c
+	$(CC) $(CFLAGS) -o $@ $^ $(LDFLAGS)
+	./$@
+
 # ---------------------------------------------------------------------------
 # valgrind — W7 테스트 바이너리 회귀 (데몬은 상주형이라 미포함)
 # ---------------------------------------------------------------------------
-valgrind: $(TEST_PARSER_EXEC) $(STORAGE_TEST_TARGETS) test_bptree test_benchmark test_index_registry
+valgrind: $(TEST_PARSER_EXEC) $(STORAGE_TEST_TARGETS) test_bptree test_benchmark test_index_registry test_engine_lock
 	@echo "=== valgrind: parser/executor ==="
 	valgrind --leak-check=full --error-exitcode=1 --quiet ./$(TEST_PARSER_EXEC)
 	@echo "=== valgrind: storage_insert ==="
 	valgrind --leak-check=full --error-exitcode=1 --quiet ./test_storage_insert
 	@echo "=== valgrind: bptree ==="
 	valgrind --leak-check=full --error-exitcode=1 --quiet ./test_bptree
+	@echo "=== valgrind: engine_lock ==="
+	valgrind --leak-check=full --error-exitcode=1 --quiet ./test_engine_lock
 
 # ---------------------------------------------------------------------------
 # B+Tree pure 벤치 (W7 자산)
@@ -168,7 +174,7 @@ loadtest:
 clean:
 	rm -f $(DAEMON) $(DAEMON_TSAN) \
 	      $(TEST_PARSER_EXEC) $(STORAGE_TEST_TARGETS) \
-	      test_bptree test_benchmark test_index_registry \
+	      test_bptree test_benchmark test_index_registry test_engine_lock \
 	      $(BENCH_TARGET) tree_shape
 	rm -rf data/*.csv data/*.schema
 	rm -rf data/schema data/tables
