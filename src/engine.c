@@ -22,6 +22,7 @@
 #include "types.h"
 #include "bptree.h"
 #include "index_registry.h"
+#include "trie.h"
 
 #include <ctype.h>
 #include <errno.h>
@@ -53,6 +54,12 @@ typedef struct {
 } held_lock_t;
 
 static atomic_uint_fast64_t s_total_queries;
+static trie_t *s_dictionary_trie;
+static atomic_bool s_dictionary_trie_ready;
+
+enum {
+    DICTIONARY_TRIE_MAX_ROWS = 4096
+};
 
 static uint64_t now_ns(void);
 static double ns_to_ms(uint64_t ns);
@@ -84,6 +91,13 @@ static char *trim_ws(char *text);
 static int equals_ignore_case(const char *left, const char *right);
 static int should_use_id_index(const ParsedSQL *sql);
 static int should_use_id_range(const ParsedSQL *sql);
+static int should_use_trie_prefix(const ParsedSQL *sql, char *prefix, size_t prefix_size);
+static int is_ascii_lowercase_word(const char *text);
+static int int_compare(const void *left, const void *right);
+static int dictionary_schema_exists(void);
+static int dictionary_trie_rebuild_locked(void);
+static void dictionary_trie_replace(trie_t *next, int ready);
+static void dictionary_trie_refresh_after_write(const ParsedSQL *sql, int status);
 static int parse_between_bounds(const WhereClause *where, int *out_from, int *out_to);
 static int lock_for_statement(const ParsedSQL *sql, bool single_mode, held_lock_t *held);
 static void unlock_statement(const held_lock_t *held);
@@ -92,7 +106,24 @@ static int is_blank_sql(const char *sql);
 int engine_init(const char *data_dir) {
     (void)data_dir;
     atomic_store_explicit(&s_total_queries, 0, memory_order_relaxed);
-    return engine_lock_init();
+    atomic_store_explicit(&s_dictionary_trie_ready, false, memory_order_release);
+    s_dictionary_trie = NULL;
+
+    if (engine_lock_init() != 0) {
+        return -1;
+    }
+
+    s_dictionary_trie = trie_create();
+    if (s_dictionary_trie == NULL) {
+        engine_lock_shutdown();
+        return -1;
+    }
+
+    if (dictionary_schema_exists()) {
+        (void)dictionary_trie_rebuild_locked();
+    }
+
+    return 0;
 }
 
 engine_result_t engine_exec_sql(const char *sql, bool single_mode) {
@@ -251,6 +282,7 @@ engine_result_t engine_explain(const char *sql) {
     }
 
     if (parsed->type == QUERY_SELECT) {
+        char prefix[256];
         if (should_use_id_range(parsed)) {
             plan = "BPTREE_RANGE_SCAN";
             r.index_used = true;
@@ -259,6 +291,11 @@ engine_result_t engine_explain(const char *sql) {
             plan = "BPTREE_POINT_LOOKUP";
             r.index_used = true;
             r.nodes_visited = 1;
+        } else if (should_use_trie_prefix(parsed, prefix, sizeof(prefix)) &&
+                   atomic_load_explicit(&s_dictionary_trie_ready, memory_order_acquire)) {
+            plan = "TRIE_PREFIX_SCAN";
+            r.index_used = true;
+            r.nodes_visited = (int)strlen(prefix);
         } else {
             plan = "FULL_SCAN";
         }
@@ -290,6 +327,7 @@ void engine_get_stats(uint64_t *total_queries, uint64_t *lock_wait_ns_total) {
 }
 
 void engine_shutdown(void) {
+    dictionary_trie_replace(NULL, 0);
     storage_reset_internal_caches();
     index_registry_destroy_all();
     engine_lock_shutdown();
@@ -545,18 +583,22 @@ static int execute_statement(ParsedSQL *sql, json_buf_t *out,
             break;
         case QUERY_CREATE:
             status = storage_create(sql->table, sql->col_defs, sql->col_def_count);
+            dictionary_trie_refresh_after_write(sql, status);
             append_status_json(out, sql, status, "create");
             break;
         case QUERY_INSERT:
             status = storage_insert(sql->table, sql->columns, sql->values, sql->val_count);
+            dictionary_trie_refresh_after_write(sql, status);
             append_status_json(out, sql, status, "insert");
             break;
         case QUERY_DELETE:
             status = storage_delete(sql->table, sql);
+            dictionary_trie_refresh_after_write(sql, status);
             append_status_json(out, sql, status, "delete");
             break;
         case QUERY_UPDATE:
             status = storage_update(sql->table, sql);
+            dictionary_trie_refresh_after_write(sql, status);
             append_status_json(out, sql, status, "update");
             break;
         default:
@@ -628,6 +670,39 @@ static int execute_select(ParsedSQL *sql, json_buf_t *out,
             }
             rowset_free(rs);
             rs = NULL;
+        }
+    }
+
+    {
+        char prefix[256];
+        if (should_use_trie_prefix(sql, prefix, sizeof(prefix)) &&
+            atomic_load_explicit(&s_dictionary_trie_ready, memory_order_acquire) &&
+            s_dictionary_trie != NULL) {
+            int *row_indices;
+            int count;
+
+            row_indices = malloc(sizeof(*row_indices) * DICTIONARY_TRIE_MAX_ROWS);
+            if (row_indices == NULL) {
+                return -1;
+            }
+
+            count = trie_search_prefix(s_dictionary_trie, prefix, row_indices,
+                                       DICTIONARY_TRIE_MAX_ROWS);
+            if (count >= DICTIONARY_TRIE_MAX_ROWS) {
+                free(row_indices);
+            } else {
+                qsort(row_indices, (size_t)count, sizeof(*row_indices), int_compare);
+                status = storage_select_result_by_row_indices(sql->table, sql,
+                                                              row_indices, count, &rs);
+                free(row_indices);
+                if (status == 0) {
+                    if (out_index_used) *out_index_used = true;
+                    if (out_nodes_visited) *out_nodes_visited = (int)strlen(prefix);
+                    return append_rowset_json(out, rs);
+                }
+                rowset_free(rs);
+                rs = NULL;
+            }
         }
     }
 
@@ -768,6 +843,148 @@ static int should_use_id_range(const ParsedSQL *sql)
     if (sql == NULL || sql->where_count != 1 || sql->where == NULL) return 0;
     return equals_ignore_case(sql->where[0].column, "id") &&
            equals_ignore_case(sql->where[0].op, "BETWEEN");
+}
+
+static int should_use_trie_prefix(const ParsedSQL *sql, char *prefix, size_t prefix_size)
+{
+    char literal[256];
+    size_t length;
+    size_t prefix_length;
+    size_t i;
+
+    if (prefix == NULL || prefix_size == 0U) return 0;
+    prefix[0] = '\0';
+
+    if (sql == NULL || sql->where_count != 1 || sql->where == NULL) return 0;
+    if (!equals_ignore_case(sql->table, "dictionary")) return 0;
+    if (!equals_ignore_case(sql->where[0].column, "english")) return 0;
+    if (strcmp(sql->where[0].op, "LIKE") != 0) return 0;
+
+    strip_optional_quotes(sql->where[0].value, literal, sizeof(literal));
+    length = strlen(literal);
+    if (length < 2U || literal[length - 1U] != '%') return 0;
+
+    prefix_length = length - 1U;
+    if (prefix_length == 0U || prefix_length >= prefix_size) return 0;
+
+    for (i = 0; i < prefix_length; ++i) {
+        if (literal[i] == '%' || literal[i] == '_') return 0;
+        prefix[i] = literal[i];
+    }
+    prefix[prefix_length] = '\0';
+
+    return is_ascii_lowercase_word(prefix);
+}
+
+static int is_ascii_lowercase_word(const char *text)
+{
+    const char *p;
+
+    if (text == NULL || text[0] == '\0') return 0;
+    for (p = text; *p != '\0'; ++p) {
+        if (*p < 'a' || *p > 'z') return 0;
+    }
+    return 1;
+}
+
+static int int_compare(const void *left, const void *right)
+{
+    const int a = *(const int *)left;
+    const int b = *(const int *)right;
+
+    if (a < b) return -1;
+    if (a > b) return 1;
+    return 0;
+}
+
+static int dictionary_schema_exists(void)
+{
+    static const char *paths[] = {
+        "data/schema/dictionary.schema",
+        "data/dictionary.schema"
+    };
+    size_t i;
+
+    for (i = 0; i < sizeof(paths) / sizeof(paths[0]); ++i) {
+        FILE *fp = fopen(paths[i], "r");
+        if (fp != NULL) {
+            fclose(fp);
+            return 1;
+        }
+    }
+    return 0;
+}
+
+static int dictionary_trie_rebuild_locked(void)
+{
+    trie_t *next = NULL;
+    ParsedSQL *select_sql = NULL;
+    RowSet *rs = NULL;
+    int status = -1;
+    int i;
+
+    next = trie_create();
+    if (next == NULL) {
+        dictionary_trie_replace(NULL, 0);
+        return -1;
+    }
+
+    if (!dictionary_schema_exists()) {
+        dictionary_trie_replace(next, 0);
+        return 0;
+    }
+
+    select_sql = parse_sql("SELECT english FROM dictionary;");
+    if (select_sql == NULL) {
+        goto fail;
+    }
+
+    if (storage_select_result("dictionary", select_sql, &rs) != 0) {
+        goto fail;
+    }
+
+    for (i = 0; rs != NULL && i < rs->row_count; ++i) {
+        const char *word = "";
+        if (rs->rows != NULL && rs->rows[i] != NULL && rs->rows[i][0] != NULL) {
+            word = rs->rows[i][0];
+        }
+        if (trie_insert(next, word, i) != 0) {
+            goto fail;
+        }
+    }
+
+    status = 0;
+
+fail:
+    rowset_free(rs);
+    free_parsed(select_sql);
+
+    if (status == 0) {
+        dictionary_trie_replace(next, 1);
+        return 0;
+    }
+
+    trie_destroy(next);
+    dictionary_trie_replace(trie_create(), 0);
+    return -1;
+}
+
+static void dictionary_trie_replace(trie_t *next, int ready)
+{
+    trie_t *old = s_dictionary_trie;
+
+    s_dictionary_trie = next;
+    atomic_store_explicit(&s_dictionary_trie_ready,
+                          (ready && next != NULL) ? true : false,
+                          memory_order_release);
+    trie_destroy(old);
+}
+
+static void dictionary_trie_refresh_after_write(const ParsedSQL *sql, int status)
+{
+    if (status != 0 || sql == NULL) return;
+    if (!equals_ignore_case(sql->table, "dictionary")) return;
+    (void)dictionary_trie_rebuild_locked();
 }
 
 static int parse_between_bounds(const WhereClause *where, int *out_from, int *out_to)
