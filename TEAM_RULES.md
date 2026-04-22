@@ -264,14 +264,21 @@ MP0 완료 전에 PM 이 확인:
 > 사전에 차단한다. Round 1 의 `§1 브랜치 전략` 과 `§8 금지 사항 요약` 을
 > 우선하고, 본 섹션이 Round 2 에 한해 덧붙이는 규칙이다.
 
-### 10-1. 소유권 매트릭스
+### 10-1. 소유권 매트릭스 (2026-04-22 pivot 반영)
 
-| 담당 | 브랜치 (제안) | 주 소유 파일 | 교차 허용 (PM review 필수) | 건드리면 안 됨 |
+> 동현 의 cache 가 engine 내부 → router 레벨로 이동하면서 매트릭스 갱신.
+> engine.c 는 용 단독 편집 영역이 되고, router.c 는 동현 ↔ 용 endpoint
+> 단위 overlap 으로 남는다.
+
+| 담당 | 브랜치 | 주 소유 파일 | 교차 허용 (PM review 필수) | 건드리면 안 됨 |
 |---|---|---|---|---|
-| 지용 (Lead, TP) | `feature/dynamic-threadpool` | `src/threadpool.c`, `include/threadpool.h` (API 추가), `src/server.c` (graceful shutdown 연계), `tests/test_threadpool.c` 보강 | `src/main.c` (signal handler 보강) | `src/cache.c`, `src/trie.c`, `src/engine.c`, `web/` |
-| 동현 (Cache) | `feature/lru-cache` | `src/cache.c` (신규), `include/cache.h` (신규), `src/engine.c` (cache 통합), `tests/test_cache.c` (신규) | `src/router.c` 의 `/api/stats` 응답에 `cache_hits`/`misses` 필드 추가 | `src/server.c`, `src/threadpool.c`, `src/trie.c`, `web/` |
-| 용 (Trie) | `feature/trie-prefix` | `src/trie.c` (신규), `include/trie.h` (신규), `src/engine.c` (prefix dispatcher), `tests/test_trie.c` (신규) | `src/router.c` 에 `/search`, `/autocomplete` handler 추가 | `src/server.c`, `src/threadpool.c`, `src/cache.c`, `web/` |
+| 지용 (Lead, TP) | `feature/dynamic-threadpool` | `src/threadpool.c`, `include/threadpool.h` (API 추가), `src/server.c` (graceful shutdown 연계), `tests/test_threadpool.c` 보강 | `src/main.c` (signal handler 보강) | `src/cache.c`, `src/trie.c`, `src/engine.c`, `src/router.c`, `web/` |
+| 동현 (Cache) | `feature/lru-cache` | `src/cache.c` (신규), `include/cache.h` (신규), `src/router.c` 의 Zone R-DICT-CACHE / R-STATS / R-INIT, `tests/test_cache.c` (신규) | — (engine.c 는 **건드리지 않음**, server.c 는 금지) | `src/server.c`, `src/engine.c`, `src/threadpool.c`, `src/trie.c`, `web/` |
+| 용 (Trie) | `feature/trie-prefix` | `src/trie.c` (신규), `include/trie.h` (신규), `src/engine.c` 의 Zone T1 + IT (prefix dispatcher + trie init/teardown), `src/router.c` 의 Zone R-AUTO / R-ADMIN-INSERT, `tests/test_trie.c` (신규) | (없음) | `src/server.c`, `src/threadpool.c`, `src/cache.c`, `web/` |
 | 승진 (FE) | `feature/ui-redesign` | `web/` 전체 | — (백엔드 무수정) | `src/`, `include/`, `Makefile`, `.github/` |
+
+Zone 이름은 `docs/round2_integration_map.md` 기준. 본 문서와 불일치하면
+통합 맵 문서가 우선.
 
 ### 10-2. 병렬 진행 허가 (승진 FE)
 
@@ -298,24 +305,32 @@ MP0 완료 전에 PM 이 확인:
   1. DM 으로 PM 에게 요청 (Slack / 이 레포 이슈 중 택 1)
   2. **구현 시작 전** 승인 받을 것 (PR 올리고 나서 승인 요청 지양)
   3. 승인 내용은 PR 본문 "참고 / 질문" 섹션에 기록
-- **거절 예시 (Round 2 회의 결정)**:
+- **거절 / 확정 예시 (Round 2 회의 결정)**:
   - ❌ 동현 가 `src/server.c` 에 cache 라이프사이클 훅을 직접 추가하는 것
-    → 기각. `engine_init` / `engine_shutdown` (동현 소유) 범위 내에서
-    `cache_create` / `cache_destroy` 호출하면 충분. server.c 의 SIGINT 경로
+    → 기각. cache 는 router 소유이며 `pthread_once` 기반 lazy init 또는
+    router.c 파일 scope static 으로 초기화. server.c 의 SIGINT 경로
     (`claude_jiyong.md § mix-merge Zone 4`) 에 race 도입 방지 목적
-  - 예외 단서: 성능 측정 결과 engine_lock 과 cache rwlock 의 경합이
-    심각하다고 확인되면 PM 재검토 — 지금은 engine 스코프로 시작
+  - ❌ 동현 가 `src/engine.c` 에 cache_get / cache_put 을 직접 삽입하는 것
+    → 기각 (2026-04-22 회의). 엔진 핵심 경로를 캐시 로직으로 오염시키지
+    않기 위함. 캐시는 router 의 `/api/dict` 핸들러 안에만 존재
+  - ✅ 동현 가 `src/router.c` 의 `/api/stats` 핸들러에 `cache_hits/misses`
+    필드를 추가하는 것 → 허용 (Zone R-STATS). endpoint 1 개 응답 확장이라
+    용 의 신규 endpoint 추가와 conflict 낮음
 
 ### 10-4. 의도된 overlap (mix-merge 포인트)
 
-Round 1 과 동일하게 일부러 겹치게 둔 지점. PM 이 mix-merge 시 좋은 쪽을
-채택.
+2026-04-22 cache pivot 으로 `src/engine.c` overlap 은 **소멸**. 남은
+overlap 은 `src/router.c` 만.
 
-| 지점 | 겹치는 두 사람 | 이유 |
+| 지점 | 겹치는 두 사람 | 실제 충돌 크기 |
 |---|---|---|
-| `src/engine.c` | 동현 (cache wrap) ↔ 용 (trie dispatcher) | 둘 다 `engine_exec_sql` 에 삽입 포인트 필요. 동현 은 outer wrap (cache check → miss 시 호출 → put), 용 은 inner dispatch (SELECT 의 prefix 여부 분기) |
-| `src/router.c` | 동현 (stats 필드 확장) ↔ 용 (신규 endpoint) | 양쪽 모두 함수 단위 추가만 하므로 상충 낮음. PM 이 마지막에 라우팅 테이블 통합 |
+| `src/router.c` | 동현 (Zone R-DICT-CACHE / R-STATS / R-INIT) ↔ 용 (Zone R-AUTO / R-ADMIN-INSERT) | **낮음** — 같은 함수 `router_dispatch` 안에 서로 다른 `if (strcmp(path, ...))` 블록을 추가. git 대부분 자동 병합 |
+| `src/engine.c` (Zone IT) | 용 단독 | overlap 없음. trie 초기화만 |
 | `CLAUDE.md § 모듈 간 인터페이스` 의 TBD 시그니처 | 4 명 전원 | 구현 시작 전 각자 리뷰 → 동의 시 PR 에 `interface-signed-off: <name>` 태그 본문에 기재 |
+
+mix-merge 순서는 `docs/round2_integration_map.md § 3` 참조. 핵심:
+PM TP → 용 trie (engine.c 변경) → 동현 cache (router.c 변경) → 용
+router 신규 endpoint → 승진 UI fetch 교체.
 
 ### 10-5. Round 2 brach 이름 규약
 

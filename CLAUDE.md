@@ -157,48 +157,63 @@ Round 1 (1차 mix-merge 머지 완료) 위에 얹는 4 개 항목. 각 항목은
   - 연쇄: `/api/stats` 응답에 `active_workers`/`n_workers_cap`/
     `utilization` 필드 추가 (FE 가 폴링)
 
-### (2) LRU 캐시 + Reader-Writer Lock
+### (2) Router-level dict cache + Reader-Writer Lock
 
-- **(a) 왜**: 같은 query (특히 autocomplete 의 짧은 prefix) 가 반복되면
-  매번 파싱 + 트리 탐색 + JSON 직렬화 비용이 중복. hot 한 key 에 대한
-  결과를 캐싱해 read 경로 단축
+> **2026-04-22 설계 변경**: 초안의 "엔진 내부 query cache" 를 **router
+> 레벨의 `/api/dict` 전용 cache** 로 pivot. 사전 서비스 범위에 맞춰
+> SQL normalize / lifetime / race window 복잡도를 제거하고 엔진 핵심
+> 경로를 무오염으로 유지.
+
+- **(a) 왜**: 영한 사전 서비스에서 "apple" 같은 hot 한 단어 조회가 반복
+  될 때 매번 파싱 + storage 탐색 + JSON 직렬화 비용이 중복. 캐시 범위가
+  `/api/dict` 라는 1 개 엔드포인트로 **명확히 제한** 되므로, 범용 query
+  cache 보다 훨씬 단순하게 구현 가능
 - **(b) 설계**:
+  - 위치: `src/cache.c` (신규) 의 generic LRU + `src/router.c` 의
+    `/api/dict` 핸들러 안에서만 호출
   - 자료구조: hashmap + doubly linked list (표준 LRU), capacity 고정
   - 동시성: 1 개 `pthread_rwlock_t` 로 전체 캐시 보호 —
     get 은 rdlock, put / invalidate 는 wrlock
   - 일관성 정책: **invalidate-on-write** 채택 (회의 확정)
-    - INSERT 발생 시 해당 테이블의 affected key 삭제
-    - 안전 쪽 기본값: INSERT 시 `cache_invalidate_all()` 도 허용 (table
-      단위 추적 복잡도 방어)
-  - key 체계: `normalize(sql) + "|" + mode(multi|single)` (whitespace /
-    대소문자 normalize 후 hash)
+    - `/api/admin/insert` 성공 시 해당 english key invalidate
+    - 보수적 fallback: `cache_invalidate_all()` 도 허용
+  - key 체계: 영한 방향은 `english` 단어 원본 (normalize 불필요), 역방향
+    은 `"ko:" + korean_word` 프리픽스로 분리 (캐시 적용 선택)
   - 크기 초기값: 1024 entry (측정 후 재조정)
+  - 초기화: `pthread_once` lazy init 또는 `router.c` 파일 scope static.
+    server.c 경유 금지 (TEAM_RULES §10-3 참조)
 - **(c) 영향 범위**:
   - 필수: `src/cache.c` (신규), `include/cache.h` (신규),
-    `src/engine.c` (exec_sql 진입 시 cache_get, INSERT 후 invalidate),
+    `src/router.c` (Zone R-DICT-CACHE / R-STATS / R-INIT),
     `tests/test_cache.c`
+  - **엔진 핵심 경로 (`src/engine.c`) 는 건드리지 않음** — 초안에서
+    변경됨
   - 연쇄: `/api/stats` 응답에 `cache_hits` / `cache_misses` 카운터 추가
 
-### (3) Trie 기반 prefix search
+### (3) Trie 기반 prefix search (ASCII 영어 only)
 
 - **(a) 왜**: B+Tree 는 **prefix 쿼리가 구조적으로 불가** (정확 매칭 /
-  range 만). 어학사전 autocomplete 유스케이스에서 단어 prefix 로
+  range 만). 영한 사전 autocomplete 유스케이스에서 영어 단어 prefix 로
   매칭되는 row 들을 빠르게 얻으려면 별도 인덱스 필요
 - **(b) 설계**:
-  - 자료구조: compressed 아닌 **표준 trie** (노드당 26 ~ UTF-8 지원
-    고려). 처음엔 ASCII 소문자만으로 시작, 확장 가능성 열어둠
-  - 노드에 `row_id` 저장 (단어 끝 노드만 non-null) + optional 자식
-    포인터
+  - 자료구조: **표준 trie**, 노드당 자식 **26 개 고정 배열** (ASCII
+    소문자 a-z). compressed trie 는 Round 2 범위 외
+  - 인덱스 대상: `dictionary.english` 컬럼 만. 한글 body 는 인덱스 대상
+    아님
+  - 노드에 `row_id` 저장 (단어 끝 노드만 non-null) + 26 개 자식 포인터
   - 삽입: `O(k)` (k = word 길이)
   - 정확 매칭: `O(k)` — 없으면 -1
   - prefix 매칭: `O(k + m)` (m = prefix 로 시작하는 단어 수,
     `max_out` 으로 상한)
   - 동시성: read 다수 / write 소수. 1 차 구현은 engine_lock 테이블
     wrlock 하에서 일괄 보호 (세밀한 trie 내부 lock 은 향후)
+  - **입력 검증**: non-ASCII / 대문자 / 숫자 / 기호 prefix 는 `/api/autocomplete`
+    핸들러에서 400 반환. trie 진입 전 차단
 - **(c) 영향 범위**:
   - 필수: `src/trie.c` (신규), `include/trie.h` (신규),
-    `src/engine.c` (prefix 쿼리 dispatcher), `tests/test_trie.c`
-  - 연쇄: `router.c` 에 `/autocomplete` endpoint 추가
+    `src/engine.c` (Zone T1 prefix dispatcher + Zone IT init/teardown),
+    `tests/test_trie.c`
+  - 연쇄: `router.c` 에 `/api/autocomplete` endpoint 추가 (Zone R-AUTO)
 
 ### (4) FE 디자인 시스템 교체 (애플/토스 스타일)
 
@@ -238,19 +253,33 @@ Round 2 완료 이후 기준:
 │  graceful shutdown: drain + timeout  │
 └──────┬───────────────────────────────┘
        ▼
+┌──────────────────────────────────────────────┐
+│ Router                                       │
+│                                              │
+│  /api/dict  ──► Dict Cache (LRU + RWLock) ┐  │
+│                   │ hit  → return JSON    │  │
+│                   │ miss ──┐              │  │
+│                            ▼              │  │
+│  /api/autocomplete ──► engine → Trie      │  │
+│  /api/admin/insert ──► engine → Storage   │  │
+│                            (on INSERT)    │  │
+│                            cache_invalidate◀─┘  │
+└──────┬───────────────────────────────────────┘
+       ▼
 ┌───────────────────────────────┐
-│ Query Parser → Planner        │
+│ Engine Layer (engine_lock 경유) │
+│  Query Parser → Planner       │
 └──────┬────────────────────────┘
        ▼
-┌───────────────────────────────┐       ┌─────────────────────────┐
-│ Cache Layer  (LRU + RWLock)   │◀──────│ invalidate on INSERT    │
-└──────┬────────────────────────┘       └──────────┬──────────────┘
-       │ miss                                      │
-       ▼                                           │
-┌───────────────────────────────┐                  │
-│ Trie Index  +  B+Tree Storage │──────────────────┘
+┌───────────────────────────────┐
+│ Trie (ASCII English only)     │
+│  + B+Tree Storage             │
 └───────────────────────────────┘
 ```
+
+**핵심 차이 (2026-04-22 설계 변경)**: Cache 는 **엔진 내부가 아니라
+router 레벨** 에 위치한다. `/api/dict` 엔드포인트만 캐시의 소비자이고,
+engine 핵심 경로 (parse → execute → storage) 는 캐시를 모른다.
 
 레이어별 동시성 전략 (Round 2 반영):
 
@@ -258,11 +287,11 @@ Round 2 완료 이후 기준:
 |---|---|---|
 | Socket | `src/server.c` | `accept()` 메인 스레드, fd 를 pool 로 전달 |
 | Thread pool | `src/threadpool.c` | mutex + condvar queue, **동적 resize** (R2) |
-| HTTP | `src/protocol.c`, `src/router.c` | 워커당 stateless |
-| Cache | `src/cache.c` (R2) | **단일 rwlock** 하에 LRU 연산 전부 직렬화 |
+| HTTP | `src/protocol.c` | 워커당 stateless |
+| **Router + Dict Cache** | `src/router.c`, `src/cache.c` (R2) | LRU 는 **단일 rwlock**, router 자체는 worker 당 stateless |
 | Engine | `src/engine.c`, `src/engine_lock.c` | 테이블 RW + catalog + single-mode |
-| Index | `src/bptree.c`, `src/trie.c` (R2) | engine 레이어 락 하에서 read |
-| Storage | `src/storage.c` (W7) | engine 레이어가 write 직렬화 |
+| Index | `src/bptree.c`, `src/trie.c` (R2, ASCII only) | engine 레이어 락 하에서 read |
+| Storage | `src/storage.c` (W7) | engine 레이어가 write 직렬화. 한글 body 역방향 조회는 여기서 선형 스캔 |
 
 ---
 
@@ -300,7 +329,10 @@ int     trie_search_prefix(const trie_t *t, const char *prefix,
 #endif
 ```
 
-### (b) Cache ↔ Query Executor
+### (b) Cache ↔ Router (`/api/dict` handler)
+
+> 초안에서는 consumer 가 Query Executor (engine.c) 였으나, 2026-04-22
+> 설계 변경으로 **Router** 가 유일한 소비자. 시그니처 자체는 초안과 동일.
 
 ```c
 /* include/cache.h — TBD — 팀 합의 필요 (담당: 동현) */
@@ -323,7 +355,7 @@ bool     cache_get(cache_t *c, const char *key,
 int      cache_put(cache_t *c, const char *key,
                    const char *json, size_t len);
 
-/* INSERT 등 write 경로에서 호출. */
+/* /api/admin/insert 성공 경로에서 호출. */
 void     cache_invalidate(cache_t *c, const char *key);
 void     cache_invalidate_all(cache_t *c);
 
@@ -333,6 +365,9 @@ unsigned long cache_misses(const cache_t *c);
 
 #endif
 ```
+
+호출 위치는 `src/router.c` 의 `/api/dict` 핸들러 안에만. engine.c / server.c
+에서 cache_* 를 호출하는 것은 **금지** (TEAM_RULES §10-3 설계 경계 참조).
 
 ### (c) Thread Pool ↔ Server
 
@@ -354,26 +389,41 @@ int    threadpool_resize(threadpool_t *tp, int new_n_workers);
 ### (d) FE ↔ Server (HTTP API)
 
 Round 2 신규 엔드포인트. 모든 응답은 `Content-Type: application/json`.
+사전 방향은 **영한** (영어 key → 한글 해석) 이 primary. 역방향 (한글 body
+→ 영어) 은 선형 스캔으로 동작은 하되 느림 ("option B").
 
 ```
-GET  /search?q=<word>
+GET  /api/dict?word=<english>
+     → 영한 조회 (primary). dict cache 체크 후 miss 면 engine 경유.
      → { "ok": true, "rows": [...], "elapsed_ms": N, "cache_hit": bool }
      → 404  { "ok": false, "error": "not_found" }
 
-GET  /autocomplete?prefix=<p>&limit=<N>
+GET  /api/dict?korean=<ko>
+     → 역방향 (한글 body → 영어). 인덱스 없음, 선형 스캔. 느릴 수 있음.
+     → { "ok": true, "rows": [...], "elapsed_ms": N }
+
+GET  /api/autocomplete?prefix=<p>&limit=<N>
+     → ASCII 소문자 영어 prefix 만. 한글/대문자/기호는 400.
      → { "ok": true, "suggestions": ["word1", "word2", ...],
          "elapsed_ms": N }
 
-POST /admin/insert
+POST /api/admin/insert
      Content-Type: application/json
-     Body: { "word": "hello", "meaning": "인사말" }
+     Body: { "english": "apple", "korean": "사과" }
+     → dictionary 테이블에 INSERT + trie 업데이트 + cache invalidate.
      → { "ok": true, "row_id": N, "elapsed_ms": N }
      → 400  { "ok": false, "error": "invalid_body" }
 ```
 
 - 모든 엔드포인트는 `engine_lock` 경유로 동시성 보호
-- `/search`, `/autocomplete` 는 캐시 check 먼저 → miss 시 엔진 호출
-- `/admin/insert` 는 테이블 wrlock + 성공 시 `cache_invalidate*` 호출
+- `/api/dict` 의 영한 방향만 **dict cache** 를 경유 (miss 시 engine 호출).
+  역방향은 캐시 적용 여부 구현자 선택
+- `/api/autocomplete` 는 trie 직접 조회 — 캐시 미적용 (prefix 조합이 많아
+  hit rate 낮음)
+- `/api/admin/insert` 는 테이블 wrlock + 성공 시 `cache_invalidate(english)`
+  호출
+- `/api/inject` (Round 1 placeholder) 는 Round 2 에서 완성 — 더미 주입
+  용도, `/api/admin/insert` 와 유사 경로
 
 ---
 
@@ -382,10 +432,24 @@ POST /admin/insert
 - **스레드 풀 축소 로직 미구현.** Round 2 범위는 `+4` 확장까지.
   scale-down (유휴 워커 해제, hysteresis 등) 은 구현 난이도 평가 후
   결정. 확정되면 이 섹션 갱신
+- **캐시 범위 = router 의 `/api/dict` 엔드포인트만.** 2026-04-22 설계
+  변경으로 엔진 내부 query cache → router-level dict cache 로 pivot.
+  - 근거: 사전 서비스는 엔드포인트 단위 캐싱으로 충분하고, engine 내부
+    캐시는 SQL normalize / lifetime / race window 오버헤드가 큼
+  - 영향: engine.c 동현 수정 zone 소멸, 동현-용 engine.c overlap 없어짐
 - **캐시 일관성 정책**: **invalidate-on-write 채택**
   (회의 결정, README § Known Issues 와 동기화). write-through 는
   금회 범위 외 — 매 INSERT 가 캐시에 새 값을 prefill 하는 방식이라
   락 구간이 길어지고 read 경로 단축 효과도 감소하므로 이번엔 기각
+- **영한 단방향 primary, 한글 body 역방향은 선형 스캔.** Trie 는 영어
+  ASCII 컬럼 (`dictionary.english`) 에만 인덱스. 한글 body 컬럼
+  (`dictionary.korean`) 은 인덱스 없음 → `?korean=사과` 조회는 기존
+  executor 의 선형 스캔 fallback 으로 동작. 동작 OK / 느림 (10 만 행
+  기준 수십~수백 ms 예상). 3 차 과제로 역방향 인덱스 추가 검토
+- **Unicode NFC 정규화 / 초성 검색 범위 외.** Trie 가 영어 ASCII only
+  라 한글 정규화 이슈 자체가 발생하지 않음. FE 는 영어 input 만 받도록
+  필터링. 한글 입력 시 `/api/dict?korean=` 쿼리 파라미터로 넘기는 경로는
+  허용하되 trie 를 안 탐
 - **Trie 내부 세분화 락 미구현.** 1 차 trie 구현은 engine_lock 의
   테이블 wrlock 에 의존. read 가 많고 write 가 드물기 때문에 일괄 락이
   성능적으로 충분하다는 전제. 병목 확인 시 read-copy-update 또는
