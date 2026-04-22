@@ -15,34 +15,36 @@
 
 ## 현재 개발 상태
 
-**Round 4 (W8) 진행 중 — MP0 완료, MP1~MP5 구현 중.**
+**Round 4 (W8) — 1차 mix-merge 완료, 시연 회의 + 2차 리팩토링 대기.**
 
 | MP | 내용 | 상태 |
 |---|---|---|
-| MP0 | PM 선작업 — 인터페이스 헤더 5종, engine_lock, Makefile, CI 4잡, stub | ✅ **완료** |
-| MP1 | 팀원 각자 브랜치 체크아웃 + 스켈레톤 커밋 | ⏳ 진행 |
-| MP2 | 각자 1차 구현 (mock 기반) | ⏳ |
-| MP3 | 2차 구현 + 단위 테스트 | ⏳ |
-| MP4 | 1차 PR 제출, PM mix-merge 시작 | ⏳ |
-| MP5 | 통합 빌드 + 데모 페이지 연결 + TSan 회귀 | ⏳ |
-| MP6 | README 최종본 + 벤치 수치 기재 + 발표 리허설 | ⏳ |
+| MP0 | PM 선작업 — 인터페이스 헤더 5종, engine_lock, Makefile, CI 4잡, stub | ✅ 완료 |
+| MP1~MP3 | 팀원 각자 구현 + 단위 테스트 | ✅ 완료 |
+| MP4 | 1차 PR 4 종 제출 + PM 1차 mix-merge (dev) | ✅ 완료 |
+| MP5a | 시연 회의 + 2차 리팩토링 (탭 UI 통합 / 더미 주입 / stats 보강) | ⏳ 진행 |
+| MP5b | TSan 통합 회귀 + loadtest 스크립트 | ⏳ |
+| MP6 | README 실측 수치 확정 + 발표 리허설 + `dev → main` | ⏳ |
 
-**지금 실제로 동작하는 것**
-- `make` — stub 포함 전체 링크 성공 (`./minisqld` 바이너리 생성, `--version` / `--help` 동작)
-- `make test` — W7 회귀 227 + W8 `engine_lock` 단위 테스트 8종 통과
-- `make tsan` — ThreadSanitizer 빌드 성공 (`./minisqld_tsan`)
-- `make valgrind` — W7/engine_lock 테스트 누수 0
-- `make bench` — B+Tree pure 벤치 (W7 자산)
-- `make repl` — ANSI REPL CLI 클라이언트 (`./minisqld-repl`, 발표 백업 시연용)
-- CI 4 개 잡 (build / test / tsan / valgrind) `main` 에서 전부 green
+**지금 실제로 동작하는 것 (dev 기준)**
+- `make` — `./minisqld` 전체 링크 성공
+- `./minisqld --port 8080 --workers 8 --data-dir ./data --web-root ./web` 으로 기동,
+  HTTP/1.1 API 서버 + 정적 파일 서빙 정상
+- `/api/query` / `/api/query?mode=single` / `/api/explain` / `/api/stats` 동작
+- `/` → `web/concurrency.html` (탭 구조 + 탭 (c) RW Contention 폴링)
+- `/stress.html` → Concurrent Stress 실동작 (multi vs single 비교 UI)
+- `make test` — W7 회귀 227 + `test_engine_lock` 8 + `test_threadpool` + `test_engine_concurrent` + `test_protocol` 통과
+- `make tsan` — `./minisqld_tsan` 빌드
+- `make valgrind` — W7 + W8 테스트 누수 0
+- `make repl` — `./minisqld-repl` ANSI CLI (발표 백업 시연용)
+- CI 4 개 잡 (build / test / tsan / valgrind) dev 에서 전부 green
 
-**아직 stub — 팀 구현 대기**
-- `src/server.c` (용 형님) — HTTP accept loop
-- `src/protocol.c` (용 형님) — HTTP 파서 / 응답 직렬화
-- `src/router.c` (용 형님) — method+path 디스패치
-- `src/engine.c` (동현) — W7 엔진 thread-safe wrapping
-- `src/threadpool.c` (승진) — worker pool
-- `web/` — 동시성 데모 페이지 (탭 (a) Stress / 탭 (c) RW Contention)
+**2차 리팩토링에서 정리할 것**
+- `web/concurrency.html` 탭 (a) 스캐폴드에 `stress.html` 의 `runBatch` JS 이식 → 한 페이지로 통합
+- `/api/inject` 501 → 실구현 (더미 10 만 행 주입)
+- `stats.c` 분리 + `qps_last_sec` sliding window 추가
+- stress 데모 측정 지표 (평균 latency / QPS) 추가 — 브라우저 제약 §아래 참조
+- CI `toolchain install` 단계 스피드업 (`chore/ci-speedup`)
 
 ---
 
@@ -147,20 +149,60 @@ CI 는 `-Werror` 로 돌아감.
 
 ---
 
-## 기대 성능 (목표치, MP5 에서 측정 후 실수치 기재)
+## 성능 (1차 mix-merge 직후 스냅샷)
 
-이 섹션은 **구현 완료 후 실측으로 대체** 됩니다. 현 시점은 설계상 기대 범위.
+> 이 수치는 **1 차 머지 직후 초기 측정값** 입니다. 2차 리팩토링 완료 후
+> 더미 데이터 10만 행 기준으로 재측정해 최종 수치로 대체됩니다.
 
-| 지표 | 목표 방향 | 근거 |
-|---|---|---|
-| SELECT (인덱스 hit) 동시성 | `mode=single` 대비 n-배 향상 | 테이블 rdlock 은 공유, worker N 동시 |
-| INSERT 동시성 | 테이블당 직렬 (예상대로), 여러 테이블이면 병렬 | 테이블 wrlock 상호 배타 |
-| SELECT/INSERT 혼합 | 읽기 다수 / 쓰기 소수 시 읽기는 대부분 병렬 진행 | rwlock 의 reader-preference |
-| end-to-end SQL 지연 | W7 subprocess 모델의 rebuild 고정비 제거 | 단일 프로세스 상주 |
-| `mode=single` vs 멀티 | 명확한 차이 시각화 | 전역 mutex 로 직렬화 |
+### 환경
+- devcontainer (linux, ubuntu-latest 계열), 8 worker threads
+- 테이블: `users` (빈 상태), SQL: `SELECT * FROM users WHERE id = 1`
 
-자료구조 pure 벤치 (B+Tree 인덱스 vs 선형 탐색) 는 W7 기준
-[`docs/README_w7.md`](docs/README_w7.md) 및 `make bench` 결과 참조.
+### 서버 측 처리량 (curl 기준, 클라이언트 병목 없음)
+
+64 요청을 **동시성 정도만 바꾸어** 발사한 전체 소요 시간:
+
+| 시나리오 | 총 소요 | vs 순차 | 비고 |
+|---|---|---|---|
+| 순차 (`xargs -P 1`) | **380 ms** | 1.0× | HTTP + TCP 오버헤드 baseline |
+| **멀티 (`xargs -P 8`)** | **85 ms** | **4.5×** | 실효 병렬 4~5 worker |
+| 싱글 (`?mode=single`, `xargs -P 8`) | 145 ms | 2.6× | 전역 mutex 로 직렬화 |
+
+- **멀티 vs 싱글 = 1.7× 차이** (쓰레드풀 + 테이블 RW lock 효과)
+- 빈 테이블이라 쿼리 work 가 아주 작아 메시지가 희석됨. 10만 행 주입 후
+  재측정 시 훨씬 큰 격차 예상 (2차 리팩토링 항목)
+
+재현:
+```bash
+seq 1 64 | xargs -P 8 -I {} curl -s -o /dev/null http://localhost:8080/api/query \
+  -H "Content-Type: text/plain" -d "SELECT * FROM users WHERE id = 1"
+```
+
+### ⚠️ 알려진 제약: 브라우저 기반 스트레스 테스트 왜곡
+
+`web/stress.html` (용 형님 탭) 에서 "멀티" vs "싱글" 을 비교할 때
+**거의 비슷한 시간이 나오는 현상** 이 보입니다. 서버 버그가 **아니라**
+브라우저 특성 때문입니다:
+
+1. 브라우저의 **per-origin 동시 HTTP/1.1 연결 한계 6** (Chrome/Firefox 공통)
+   → JS 가 64 동시 요청을 보내도 실제로는 6 개씩 직렬 처리
+2. 서버가 `Connection: close` 운용 (Keep-alive 미지원)
+   → 요청마다 TCP 핸드셰이크 추가, 브라우저 내부 큐잉 증폭
+3. 빈 테이블 SELECT 는 서버 work 가 HTTP 오버헤드 대비 너무 작아 차이가 노이즈에 묻힘
+
+**진짜 서버 멀티 이득을 보려면** 위 `xargs` 명령을 쓰거나 `./minisqld-repl`
+(향후 `\stress` 내장 명령) 을 사용하세요. 브라우저 시연용 수치는 상대비교
+용도로만 참고.
+
+2차 리팩토링에서 개선 예정:
+- 더미 10만 행 주입 → 쿼리 work 증가 → 브라우저 6-limit 하에서도 차이 가시화
+- stress UI 에 **평균 latency (ms/req)** / **QPS** 표기 추가 (총 시간만으로는 server-side 성능 분리 불가)
+- `scripts/demo_stress.sh` 터미널 시연 스크립트 — 브라우저 제약 완전 우회
+
+### 참고: 자료구조 pure 벤치
+B+Tree 인덱스 vs 선형 탐색 수치는 W7 에서 측정한 **`make bench` 기준**
+(up to 1,842×) — [`docs/README_w7.md`](docs/README_w7.md) 참조. Round 4 의
+end-to-end 수치는 여기에 HTTP + lock 오버헤드가 상수로 더해진 값.
 
 ---
 
