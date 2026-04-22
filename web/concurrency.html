@@ -1,1430 +1,1051 @@
 <!DOCTYPE html>
-<html lang="ko">
+<html class="light" lang="ko">
 <head>
-<meta charset="UTF-8">
-<meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>MiniSQL Concurrency Demo</title>
+<meta charset="utf-8"/>
+<meta content="width=device-width, initial-scale=1.0" name="viewport"/>
+<title>MiniSQL Dictionary Lab</title>
+<script src="https://cdn.tailwindcss.com?plugins=forms,container-queries"></script>
+<link href="https://fonts.googleapis.com/css2?family=Material+Symbols+Outlined:wght,FILL@100..700,0..1&amp;display=swap" rel="stylesheet"/>
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&amp;display=swap" rel="stylesheet"/>
+<script id="tailwind-config">
+  tailwind.config = {
+    darkMode: "class",
+    theme: {
+      extend: {
+        colors: {
+          "surface-variant": "#e4e2e4",
+          "tertiary-fixed-dim": "#ffb595",
+          "primary": "#0058bc",
+          "on-background": "#1b1b1d",
+          "primary-fixed-dim": "#adc6ff",
+          "tertiary-container": "#c64f00",
+          "on-secondary-fixed-variant": "#46464b",
+          "surface-container-high": "#eae7ea",
+          "on-primary-fixed-variant": "#004493",
+          "surface-bright": "#fcf8fb",
+          "outline": "#717786",
+          "tertiary": "#9e3d00",
+          "on-tertiary-fixed-variant": "#7c2e00",
+          "secondary": "#5d5e63",
+          "background": "#fcf8fb",
+          "on-primary": "#ffffff",
+          "surface-container": "#f0edef",
+          "secondary-fixed-dim": "#c6c6cb",
+          "primary-fixed": "#d8e2ff",
+          "surface-container-low": "#f6f3f5",
+          "on-secondary-container": "#626267",
+          "inverse-primary": "#adc6ff",
+          "surface-container-highest": "#e4e2e4",
+          "on-secondary-fixed": "#1a1b1f",
+          "inverse-surface": "#303032",
+          "tertiary-fixed": "#ffdbcc",
+          "on-error": "#ffffff",
+          "inverse-on-surface": "#f3f0f2",
+          "outline-variant": "#c1c6d7",
+          "on-error-container": "#93000a",
+          "on-tertiary-fixed": "#351000",
+          "on-surface": "#1b1b1d",
+          "error": "#ba1a1a",
+          "surface-container-lowest": "#ffffff",
+          "on-surface-variant": "#414755",
+          "secondary-container": "#e0dfe4",
+          "on-tertiary": "#ffffff",
+          "on-tertiary-container": "#fffbff",
+          "error-container": "#ffdad6",
+          "on-primary-fixed": "#001a41",
+          "on-secondary": "#ffffff",
+          "surface-tint": "#005bc1",
+          "surface-dim": "#dcd9dc",
+          "surface": "#fcf8fb",
+          "secondary-fixed": "#e3e2e7",
+          "primary-container": "#0070eb",
+          "on-primary-container": "#fefcff"
+        },
+        borderRadius: {
+          DEFAULT: "0.25rem",
+          lg: "0.5rem",
+          xl: "0.75rem",
+          full: "9999px"
+        },
+        spacing: {
+          xxl: "64px",
+          xs: "4px",
+          md: "16px",
+          gutter: "16px",
+          unit: "4px",
+          "container-padding": "24px",
+          sm: "8px",
+          lg: "24px",
+          xl: "40px"
+        },
+        fontFamily: {
+          "label-sm": ["Inter"],
+          "headline-md": ["Inter"],
+          "display": ["Inter"],
+          "headline-lg": ["Inter"],
+          "label-caps": ["Inter"],
+          "body-md": ["Inter"],
+          "body-lg": ["Inter"]
+        },
+        fontSize: {
+          "label-sm": ["13px", { lineHeight: "1.2", letterSpacing: "0", fontWeight: "500" }],
+          "headline-md": ["24px", { lineHeight: "1.3", letterSpacing: "-0.01em", fontWeight: "600" }],
+          "display": ["48px", { lineHeight: "1.1", letterSpacing: "-0.02em", fontWeight: "700" }],
+          "headline-lg": ["32px", { lineHeight: "1.2", letterSpacing: "-0.01em", fontWeight: "700" }],
+          "label-caps": ["12px", { lineHeight: "1", letterSpacing: "0.05em", fontWeight: "600" }],
+          "body-md": ["16px", { lineHeight: "1.5", letterSpacing: "0", fontWeight: "400" }],
+          "body-lg": ["18px", { lineHeight: "1.6", letterSpacing: "0", fontWeight: "400" }]
+        }
+      }
+    }
+  };
+</script>
 <style>
-  :root {
-    --bg: #0b1020;
-    --bg-elevated: #121a2d;
-    --panel: rgba(12, 20, 35, 0.88);
-    --panel-strong: #18233d;
-    --ink: #eef2ff;
-    --muted: #98a7c2;
-    --line: rgba(255, 255, 255, 0.12);
-    --accent: #f59e0b;
-    --accent-strong: #d97706;
-    --cool: #22c55e;
-    --warn: #f97316;
-    --danger: #ef4444;
-    --shadow: 0 20px 60px rgba(0, 0, 0, 0.32);
-    --heading: "Palatino Linotype", "Book Antiqua", Palatino, serif;
-    --body: "Bahnschrift", "Segoe UI", sans-serif;
-    --mono: "Consolas", "Liberation Mono", monospace;
-  }
-
-  * {
-    box-sizing: border-box;
-  }
-
-  html {
-    scroll-behavior: smooth;
-  }
-
-  body {
-    margin: 0;
-    min-height: 100vh;
-    background:
-      radial-gradient(circle at top left, rgba(245, 158, 11, 0.18), transparent 32%),
-      radial-gradient(circle at 85% 15%, rgba(34, 197, 94, 0.12), transparent 24%),
-      linear-gradient(180deg, #0a0f1c 0%, #0f172a 100%);
-    color: var(--ink);
-    font-family: var(--body);
-  }
-
-  body::before {
-    content: "";
-    position: fixed;
-    inset: 0;
-    pointer-events: none;
-    background-image:
-      linear-gradient(rgba(255, 255, 255, 0.035) 1px, transparent 1px),
-      linear-gradient(90deg, rgba(255, 255, 255, 0.035) 1px, transparent 1px);
-    background-size: 28px 28px;
-    mask-image: linear-gradient(180deg, rgba(0, 0, 0, 0.5), transparent 88%);
-  }
-
-  main {
-    width: min(1200px, calc(100vw - 32px));
-    margin: 0 auto;
-    padding: 40px 0 56px;
-  }
-
-  .hero {
-    display: grid;
-    grid-template-columns: minmax(0, 1.45fr) minmax(280px, 0.85fr);
-    gap: 20px;
-    margin-bottom: 24px;
-  }
-
-  .hero-card,
-  .side-card,
-  .surface {
-    background: var(--panel);
-    border: 1px solid var(--line);
-    border-radius: 22px;
-    box-shadow: var(--shadow);
-    backdrop-filter: blur(18px);
-  }
-
-  .hero-card {
-    padding: 28px;
-    position: relative;
-    overflow: hidden;
-  }
-
-  .hero-card::after {
-    content: "";
-    position: absolute;
-    inset: auto -60px -60px auto;
-    width: 220px;
-    height: 220px;
-    border-radius: 999px;
-    background: radial-gradient(circle, rgba(245, 158, 11, 0.26), transparent 72%);
-  }
-
-  .side-card {
-    padding: 24px;
-    display: flex;
-    flex-direction: column;
-    gap: 16px;
-    justify-content: space-between;
-  }
-
-  .eyebrow {
-    color: var(--accent);
-    font-size: 12px;
-    letter-spacing: 0.18em;
-    text-transform: uppercase;
-    margin-bottom: 10px;
-  }
-
-  h1,
-  h2,
-  h3 {
-    font-family: var(--heading);
-    margin: 0;
-    letter-spacing: -0.02em;
-  }
-
-  h1 {
-    font-size: clamp(34px, 5vw, 58px);
-    line-height: 0.96;
-    margin-bottom: 14px;
-  }
-
-  .hero p,
-  .surface p,
-  .side-card p {
-    margin: 0;
-    color: var(--muted);
-    line-height: 1.6;
-  }
-
-  .stat-strip {
-    display: grid;
-    grid-template-columns: repeat(3, minmax(0, 1fr));
-    gap: 12px;
-    margin-top: 22px;
-  }
-
-  .stat-pill {
-    padding: 14px 16px;
-    border: 1px solid rgba(255, 255, 255, 0.08);
-    border-radius: 16px;
-    background: rgba(255, 255, 255, 0.03);
-  }
-
-  .stat-label {
-    display: block;
-    font-size: 12px;
-    color: var(--muted);
-    margin-bottom: 6px;
-    letter-spacing: 0.08em;
-    text-transform: uppercase;
-  }
-
-  .stat-value {
-    font-size: 22px;
-    font-weight: 700;
-    font-family: var(--mono);
-  }
-
-  .note-list {
-    margin: 0;
-    padding-left: 18px;
-    color: var(--muted);
-  }
-
-  .note-list li + li {
-    margin-top: 10px;
-  }
-
-  .tabs {
-    display: flex;
-    gap: 10px;
-    margin-bottom: 18px;
-    flex-wrap: wrap;
-  }
-
-  .tab-button {
-    border: 1px solid rgba(255, 255, 255, 0.1);
-    background: rgba(255, 255, 255, 0.035);
-    color: var(--muted);
-    border-radius: 999px;
-    padding: 12px 18px;
-    font: inherit;
-    cursor: pointer;
-    transition: 140ms ease;
-  }
-
-  .tab-button:hover,
-  .tab-button:focus-visible {
-    color: var(--ink);
-    border-color: rgba(245, 158, 11, 0.5);
-    outline: none;
-    transform: translateY(-1px);
-  }
-
-  .tab-button.is-active {
-    color: #1f1302;
-    border-color: transparent;
-    background: linear-gradient(135deg, #fcd34d 0%, #f59e0b 100%);
-  }
-
-  .tab-panel {
-    display: none;
-  }
-
-  .tab-panel.is-active {
-    display: block;
-  }
-
-  .panel-grid {
-    display: grid;
-    grid-template-columns: minmax(0, 1.2fr) minmax(320px, 0.8fr);
-    gap: 18px;
-    margin-bottom: 18px;
-  }
-
-  .surface {
-    padding: 22px;
-  }
-
-  .surface-header {
-    display: flex;
-    align-items: flex-start;
-    justify-content: space-between;
-    gap: 14px;
-    margin-bottom: 18px;
-  }
-
-  .surface-header p {
-    max-width: 58ch;
-  }
-
-  .badge {
-    display: inline-flex;
-    align-items: center;
-    gap: 8px;
-    border-radius: 999px;
-    padding: 8px 12px;
-    font-size: 12px;
-    background: rgba(245, 158, 11, 0.12);
-    color: #fed7aa;
-    white-space: nowrap;
-  }
-
-  .badge::before {
-    content: "";
-    width: 8px;
-    height: 8px;
-    border-radius: 50%;
-    background: currentColor;
-    box-shadow: 0 0 0 4px rgba(245, 158, 11, 0.12);
-  }
-
-  .form-grid {
-    display: grid;
-    grid-template-columns: repeat(2, minmax(0, 1fr));
-    gap: 14px;
-  }
-
-  .field {
-    display: flex;
-    flex-direction: column;
-    gap: 8px;
-  }
-
-  .field label {
-    color: var(--muted);
-    font-size: 13px;
-  }
-
-  .field input,
-  .field textarea {
-    width: 100%;
-    background: var(--bg-elevated);
-    border: 1px solid rgba(255, 255, 255, 0.1);
-    color: var(--ink);
-    border-radius: 14px;
-    padding: 12px 14px;
-    font: inherit;
-  }
-
-  .field textarea {
-    min-height: 118px;
-    resize: vertical;
-    font-family: var(--mono);
-    font-size: 13px;
-    line-height: 1.5;
-  }
-
-  .field input {
-    min-height: 46px;
-  }
-
-  .field input:focus,
-  .field textarea:focus,
-  .action-row button:focus-visible,
-  .tab-button:focus-visible {
-    outline: 2px solid rgba(245, 158, 11, 0.45);
-    outline-offset: 2px;
-  }
-
-  .field-span-2 {
-    grid-column: 1 / -1;
-  }
-
-  .action-row {
-    display: flex;
-    gap: 12px;
-    align-items: center;
-    flex-wrap: wrap;
-    margin-top: 18px;
-  }
-
-  button.action {
-    border: none;
-    border-radius: 999px;
-    padding: 12px 18px;
-    font: inherit;
-    font-weight: 700;
-    cursor: pointer;
-    transition: 140ms ease;
-  }
-
-  button.action:hover {
-    transform: translateY(-1px);
-  }
-
-  button.primary {
-    background: linear-gradient(135deg, #f59e0b 0%, #ea580c 100%);
-    color: #120701;
-  }
-
-  button.secondary {
-    background: rgba(255, 255, 255, 0.05);
-    border: 1px solid rgba(255, 255, 255, 0.1);
-    color: var(--ink);
-  }
-
-  button.action:disabled {
-    opacity: 0.45;
-    cursor: not-allowed;
-    transform: none;
-  }
-
-  .status-line {
-    font-size: 13px;
-    color: var(--muted);
-  }
-
-  .status-line strong {
-    color: var(--ink);
-  }
-
-  .metrics {
-    display: grid;
-    grid-template-columns: repeat(2, minmax(0, 1fr));
-    gap: 12px;
-    margin-bottom: 18px;
-  }
-
-  .metric-card {
-    padding: 16px;
-    border-radius: 18px;
-    background: rgba(255, 255, 255, 0.035);
-    border: 1px solid rgba(255, 255, 255, 0.08);
-  }
-
-  .metric-card .stat-label {
-    margin-bottom: 10px;
-  }
-
-  .timeline {
-    display: grid;
-    gap: 10px;
-    max-height: 292px;
-    overflow-y: auto;
-    padding-right: 4px;
-  }
-
-  .timeline-row {
-    display: grid;
-    grid-template-columns: 104px 1fr auto;
-    gap: 10px;
-    align-items: center;
-    padding: 12px 14px;
-    border-radius: 14px;
-    background: rgba(255, 255, 255, 0.03);
-    border: 1px solid rgba(255, 255, 255, 0.06);
-    font-size: 13px;
-  }
-
-  .timeline-row code,
-  .request-table code {
-    font-family: var(--mono);
-  }
-
-  .sparkline {
-    display: flex;
-    align-items: flex-end;
-    gap: 4px;
-    min-height: 66px;
-    padding: 12px 10px 10px;
-    border-radius: 16px;
-    background:
-      linear-gradient(180deg, rgba(255, 255, 255, 0.03), rgba(255, 255, 255, 0)),
-      rgba(255, 255, 255, 0.02);
-    border: 1px solid rgba(255, 255, 255, 0.05);
-  }
-
-  .sparkline-bar {
-    flex: 1 1 0;
-    min-width: 10px;
-    border-radius: 999px 999px 3px 3px;
-    background: linear-gradient(180deg, rgba(34, 197, 94, 0.92), rgba(21, 128, 61, 0.72));
-  }
-
-  .placeholder {
-    border: 1px dashed rgba(255, 255, 255, 0.18);
-    border-radius: 18px;
-    padding: 18px;
-    color: var(--muted);
-    background: rgba(255, 255, 255, 0.02);
-  }
-
-  .result-grid {
-    display: grid;
-    grid-template-columns: minmax(0, 0.9fr) minmax(0, 1.1fr);
-    gap: 18px;
-  }
-
-  .summary-board {
-    display: grid;
-    grid-template-columns: repeat(2, minmax(0, 1fr));
-    gap: 12px;
-  }
-
-  .summary-tile {
-    padding: 18px;
-    border-radius: 18px;
-    background: rgba(255, 255, 255, 0.035);
-    border: 1px solid rgba(255, 255, 255, 0.08);
-  }
-
-  .summary-tile strong {
-    display: block;
-    font-family: var(--mono);
-    font-size: 24px;
-    margin-top: 8px;
-  }
-
-  .request-table-wrap {
-    overflow: auto;
-    border-radius: 18px;
-    border: 1px solid rgba(255, 255, 255, 0.08);
-  }
-
-  .request-table {
-    width: 100%;
-    border-collapse: collapse;
-    min-width: 620px;
-  }
-
-  .request-table th,
-  .request-table td {
-    padding: 12px 14px;
-    text-align: left;
-    border-bottom: 1px solid rgba(255, 255, 255, 0.08);
-    font-size: 13px;
-  }
-
-  .request-table th {
-    position: sticky;
-    top: 0;
-    background: #16213a;
-    color: #e8eef9;
-    z-index: 1;
-  }
-
-  .request-table tbody tr:nth-child(even) td {
-    background: rgba(255, 255, 255, 0.02);
-  }
-
-  .request-table tbody tr:hover td {
-    background: rgba(255, 255, 255, 0.05);
-  }
-
-  .ok {
-    color: #86efac;
-  }
-
-  .warn {
-    color: #fdba74;
-  }
-
-  .fail {
-    color: #fca5a5;
-  }
-
-  .caption {
-    margin-top: 12px;
-    color: var(--muted);
-    font-size: 13px;
-    line-height: 1.6;
-  }
-
-  .footnote {
-    margin-top: 18px;
-    color: var(--muted);
-    font-size: 12px;
-    line-height: 1.6;
-  }
-
-  @media (max-width: 980px) {
-    .hero,
-    .panel-grid,
-    .result-grid {
-      grid-template-columns: 1fr;
-    }
-
-    .summary-board,
-    .metrics,
-    .form-grid,
-    .stat-strip {
-      grid-template-columns: 1fr;
-    }
-
-    .timeline-row {
-      grid-template-columns: 1fr;
-      gap: 6px;
-    }
-  }
-
-  /* ── tab (a) Concurrent Stress — multi vs single 비교 UI ─────── */
-  .stress-metric {
-    margin-top: 14px;
-  }
-  .stress-metric:first-child {
-    margin-top: 0;
-  }
-  .stress-metric-head {
-    display: flex;
-    justify-content: space-between;
-    gap: 12px;
-    font-weight: 700;
-    color: var(--ink);
-    font-family: var(--body);
-  }
-  .stress-metric-head small {
-    color: var(--muted);
-    font-family: var(--mono);
-    font-size: 13px;
-    font-weight: 500;
-  }
-  .stress-bar-track {
-    height: 14px;
-    border-radius: 6px;
-    background: rgba(255, 255, 255, 0.08);
-    overflow: hidden;
-    margin-top: 8px;
-    border: 1px solid var(--line);
-  }
-  .stress-bar {
-    height: 100%;
-    width: 0%;
-    background: var(--cool);
-    transition: width 0.18s ease;
-  }
-  .stress-bar-single {
-    background: var(--accent);
-  }
-  .stress-endpoint-hint {
-    color: var(--muted);
-    font-family: var(--mono);
-    font-size: 13px;
-  }
-  .stress-error {
-    color: var(--danger);
-    font-size: 13px;
-    min-height: 18px;
-    margin-top: 10px;
-  }
-  #stress-sql {
-    min-height: 80px;
-  }
-  #stress-concurrency {
-    width: 100%;
-  }
+  html { font-family: "Inter", system-ui, -apple-system, "Segoe UI", sans-serif; }
+  body { font-family: inherit; }
+  .material-symbols-outlined { font-variation-settings: "FILL" 0, "wght" 400, "GRAD" 0, "opsz" 24; }
+  .autocomplete-item { cursor: pointer; }
+  .autocomplete-item:hover, .autocomplete-item.is-focused { background: #f0edef; }
+  .sparkline-bar { min-height: 4px; transition: height 0.4s ease-out; }
+  .trace-scroll { scrollbar-width: thin; scrollbar-color: #c1c6d7 transparent; }
 </style>
 </head>
-<body>
-<main>
-  <section class="hero">
-    <article class="hero-card">
-      <div class="eyebrow">Round 4 Demo</div>
-      <h1>Concurrency As A Visible Surface.</h1>
-      <p>
-        이 페이지는 발표용 동시성 데모 셸이다. 탭 `(a)` 와 `(c)` 가 같은 컨테이너,
-        같은 카드 구조, 같은 fetch helper 를 공유하도록 맞춰서 merge 충돌을 줄였다.
+<body class="bg-background text-on-background font-body-md min-h-screen">
+<div class="flex flex-col md:flex-row min-h-screen w-full">
+
+  <!-- ══════════════════════════════════════════════════════════
+       LEFT COLUMN — Dictionary
+       ══════════════════════════════════════════════════════════ -->
+  <main class="w-full md:w-1/2 border-r border-surface-variant flex flex-col h-screen overflow-y-auto bg-surface">
+    <header class="p-lg md:p-xl pb-0">
+      <h1 class="font-display text-display text-on-surface tracking-tight">Dictionary</h1>
+      <p class="font-body-lg text-body-lg text-on-surface-variant mt-sm">
+        MiniSQL 영한 사전 — 단어를 검색하거나 새 항목을 등록해보세요.
       </p>
-      <div class="stat-strip">
-        <div class="stat-pill">
-          <span class="stat-label">Query API</span>
-          <span class="stat-value"><code>POST /api/query</code></span>
-        </div>
-        <div class="stat-pill">
-          <span class="stat-label">Stats API</span>
-          <span class="stat-value"><code>GET /api/stats</code></span>
-        </div>
-        <div class="stat-pill">
-          <span class="stat-label">Mode</span>
-          <span class="stat-value"><code>?mode=single</code></span>
-        </div>
-      </div>
-    </article>
+    </header>
 
-    <aside class="side-card">
-      <div>
-        <div class="eyebrow">PM Follow-up</div>
-        <h3>현재 slice</h3>
-      </div>
-      <ol class="note-list">
-        <li>`tests/test_threadpool.c` 는 10K submit 과 shutdown drain 검증을 이미 포함한다.</li>
-        <li>탭 `(c)` 는 `/api/stats` 를 폴링하면서 read/write 경쟁 상황을 한 화면에 보여준다.</li>
-        <li>`src/stats.c` 는 만들지 않고, stats 응답은 기존 엔진/서버 경로를 소비하는 방향으로 둔다.</li>
-      </ol>
-    </aside>
-  </section>
-
-  <div class="tabs" role="tablist" aria-label="Concurrency demos">
-    <button class="tab-button is-active" type="button" data-tab-target="tab-a" role="tab" aria-selected="true">
-      (a) Concurrent Stress
-    </button>
-    <button class="tab-button" type="button" data-tab-target="tab-c" role="tab" aria-selected="false">
-      (c) RW Contention
-    </button>
-  </div>
-
-  <section id="tab-a" class="tab-panel is-active" role="tabpanel">
-    <div class="panel-grid">
-      <article class="surface">
-        <div class="surface-header">
-          <div>
-            <div class="eyebrow">Concurrent Stress</div>
-            <h2>싱글 vs 멀티 모드 비교</h2>
-          </div>
-          <span class="badge">POST /api/query</span>
-        </div>
-        <p>
-          같은 SQL 을 N 개 병렬 발사해서 <code>/api/query</code> (멀티) 와
-          <code>?mode=single</code> (전역 직렬화) 소요 시간을 비교한다.
-        </p>
-        <form id="stress-form" class="form-grid" style="margin-top:18px;">
-          <div class="field field-span-2">
-            <label for="stress-sql">비교 SQL</label>
-            <textarea id="stress-sql" spellcheck="false">SELECT * FROM users WHERE id = 1</textarea>
-          </div>
-          <div class="field">
-            <label for="stress-concurrency">
-              동시 요청 수 &nbsp;<span id="stress-count-value">16</span>
-            </label>
-            <input id="stress-concurrency" type="range" min="1" max="64" value="16">
-          </div>
-          <div class="field">
-            <label>엔드포인트</label>
-            <span class="stress-endpoint-hint">
-              /api/query &nbsp;vs&nbsp; /api/query?mode=single
-            </span>
-          </div>
-        </form>
-        <div class="action-row" style="margin-top:18px;">
-          <button id="stress-run" class="action secondary" type="button">
-            싱글 vs 멀티 비교
+    <!-- Search area (direction toggle + input + autocomplete) -->
+    <section class="p-lg md:p-xl mt-md">
+      <div class="max-w-2xl mx-auto">
+        <div class="flex flex-wrap gap-sm mb-md" role="tablist" aria-label="검색 방향">
+          <button id="dirEnBtn" type="button" role="tab" aria-selected="true"
+            class="px-md py-sm rounded-full bg-primary text-on-primary font-label-sm text-label-sm transition-colors">
+            English → Korean
           </button>
-          <span id="stress-status" class="status-line">Ready</span>
+          <button id="dirKoBtn" type="button" role="tab" aria-selected="false"
+            class="px-md py-sm rounded-full bg-surface-container-high text-on-surface font-label-sm text-label-sm transition-colors">
+            Korean → English
+          </button>
         </div>
-        <div id="stress-error" class="stress-error"></div>
-      </article>
 
-      <aside class="surface">
-        <div class="surface-header">
-          <div>
-            <div class="eyebrow">Results</div>
-            <h2>실행 시간 (총 소요)</h2>
-          </div>
+        <div class="relative">
+          <span class="material-symbols-outlined absolute left-lg top-1/2 -translate-y-1/2 text-outline text-2xl pointer-events-none">search</span>
+          <input id="searchInput" type="text" autocomplete="off" spellcheck="false"
+            class="w-full h-xxl pl-[64px] pr-[132px] rounded-[24px] bg-surface-container-low border border-surface-variant focus:bg-surface-container-lowest focus:border-primary focus:ring-4 focus:ring-primary-container/20 transition-all font-body-lg text-body-lg outline-none placeholder:text-outline-variant shadow-sm"
+            placeholder="Search for a word..."/>
+          <button id="searchBtn" type="button"
+            class="absolute right-sm top-1/2 -translate-y-1/2 bg-primary text-on-primary rounded-full px-lg py-sm font-label-sm text-label-sm hover:bg-primary-container transition-colors">
+            Search
+          </button>
+          <ul id="autocompleteList" role="listbox"
+            class="hidden absolute left-0 right-0 top-[calc(100%+6px)] bg-surface-container-lowest border border-surface-variant rounded-xl shadow-[0_4px_20px_rgba(0,0,0,0.08)] overflow-hidden z-20 max-h-64 overflow-y-auto trace-scroll">
+          </ul>
         </div>
-        <div class="stress-metric">
-          <div class="stress-metric-head">
-            <span>Multi mode</span>
-            <small id="stress-multi-summary">0 ms</small>
-          </div>
-          <div class="stress-bar-track">
-            <div id="stress-multi-bar" class="stress-bar"></div>
-          </div>
-        </div>
-        <div class="stress-metric">
-          <div class="stress-metric-head">
-            <span>Single mode</span>
-            <small id="stress-single-summary">0 ms</small>
-          </div>
-          <div class="stress-bar-track">
-            <div id="stress-single-bar" class="stress-bar stress-bar-single"></div>
-          </div>
-        </div>
-        <p class="footnote" style="margin-top:16px;">
-          ⚠ 브라우저의 per-origin 동시 연결 제한 (6) 때문에 서버 멀티 이득이
-          희석될 수 있음. 진짜 차이를 보려면 <code>xargs -P 8</code> 또는 REPL 사용.
+        <p class="mt-sm font-label-sm text-label-sm text-on-surface-variant">
+          <span class="material-symbols-outlined text-base align-text-bottom">info</span>
+          autocomplete 는 용 2차 PR 머지 전까지 mock 응답을 사용합니다.
         </p>
-      </aside>
-    </div>
-  </section>
+      </div>
+    </section>
 
-  <section id="tab-c" class="tab-panel" role="tabpanel">
-    <div class="panel-grid">
-      <article class="surface">
-        <div class="surface-header">
-          <div>
-            <div class="eyebrow">RW Contention</div>
-            <h2>Read는 겹치고 Write는 막히는지 확인</h2>
-          </div>
-          <span class="badge">live stats polling</span>
+    <!-- Word card -->
+    <section class="px-lg md:px-xl mt-lg">
+      <article id="wordCard" class="bg-surface-container-lowest rounded-[24px] border border-surface-variant shadow-[0_4px_20px_rgba(0,0,0,0.04)] p-xl transition-transform hover:scale-[1.01] duration-300">
+        <div class="flex items-center justify-between gap-md mb-lg">
+          <h2 id="wordTitle" class="font-headline-lg text-headline-lg text-on-surface truncate">검색해보세요</h2>
+          <span id="wordChip" class="shrink-0 bg-primary-container/10 text-primary px-md py-sm rounded-full font-label-sm text-label-sm">영 → 한</span>
         </div>
-        <p>
-          reader 요청과 writer 요청을 동시에 던지고, 실행 중에는 `/api/stats` 를 1초마다 폴링한다.
-          서버가 아직 stub 이거나 JSON 키가 덜 정해져 있어도, 가능한 숫자만 추려서 화면에 유지한다.
-        </p>
-
-        <div class="form-grid" style="margin-top:18px;">
-          <div class="field">
-            <label for="rw-readers">Reader count</label>
-            <input id="rw-readers" type="number" min="1" max="500" value="100">
-          </div>
-          <div class="field">
-            <label for="rw-writers">Writer count</label>
-            <input id="rw-writers" type="number" min="1" max="500" value="100">
-          </div>
-          <div class="field">
-            <label for="rw-poll-ms">Stats poll interval (ms)</label>
-            <input id="rw-poll-ms" type="number" min="250" step="250" value="1000">
-          </div>
-          <div class="field">
-            <label for="rw-base-id">Writer base id</label>
-            <input id="rw-base-id" type="number" min="1" value="100000">
-          </div>
-          <div class="field field-span-2">
-            <label for="rw-select-sql">Reader SQL</label>
-            <textarea id="rw-select-sql">SELECT * FROM users WHERE id = 1;</textarea>
-          </div>
-          <div class="field field-span-2">
-            <label for="rw-insert-sql">Writer SQL template (`__ID__`, `__NAME__` 치환 가능)</label>
-            <textarea id="rw-insert-sql">INSERT INTO users (id, name, age) VALUES (__ID__, '__NAME__', 30);</textarea>
-          </div>
+        <div id="wordBody" class="space-y-lg">
+          <p class="font-body-lg text-body-lg text-on-surface-variant">
+            검색창에 영어 단어를 입력하고 Enter 또는 Search 를 누르면 결과가 여기에 표시됩니다.
+          </p>
         </div>
-
-        <div class="action-row">
-          <button id="rw-run" class="action primary" type="button">RW 시나리오 실행</button>
-          <button id="rw-refresh-stats" class="action secondary" type="button">stats 1회 새로고침</button>
-          <span id="rw-run-status" class="status-line">
-            아직 실행하지 않음.
-          </span>
+        <div id="wordMeta" class="hidden flex-wrap items-center gap-md mt-lg pt-lg border-t border-surface-variant">
+          <span id="wordMetaCache" class="px-md py-xs rounded-full font-label-sm text-label-sm bg-surface-container-high text-on-surface-variant"></span>
+          <span id="wordMetaElapsed" class="font-label-sm text-label-sm text-on-surface-variant"></span>
+          <span id="wordMetaCount" class="font-label-sm text-label-sm text-on-surface-variant"></span>
         </div>
       </article>
+    </section>
 
-      <aside class="surface">
-        <div class="surface-header">
+    <!-- Admin insert form -->
+    <section class="p-lg md:p-xl mt-auto border-t border-surface-variant bg-surface-container-low">
+      <div class="flex flex-wrap items-center justify-between gap-sm mb-md">
+        <h3 class="font-headline-md text-headline-md text-on-surface">Add New Entry</h3>
+        <span class="font-label-sm text-label-sm text-on-surface-variant">POST /api/admin/insert</span>
+      </div>
+      <form id="insertForm" class="space-y-md">
+        <div class="grid grid-cols-1 sm:grid-cols-2 gap-md">
           <div>
-            <div class="eyebrow">Stats Snapshot</div>
-            <h2>폴링 상태와 최근 추이</h2>
+            <label for="insertEnglish" class="block font-label-sm text-label-sm text-on-surface-variant mb-xs">English</label>
+            <input id="insertEnglish" type="text" autocomplete="off"
+              class="w-full h-12 px-md rounded-lg bg-surface-container-lowest border border-surface-variant focus:border-primary focus:ring-2 focus:ring-primary-container/20 font-body-md text-body-md outline-none"
+              placeholder="apple"/>
           </div>
-        </div>
-
-        <div class="metrics">
-          <div class="metric-card">
-            <span class="stat-label">Active workers</span>
-            <div id="metric-active-workers" class="stat-value">-</div>
-          </div>
-          <div class="metric-card">
-            <span class="stat-label">Queue depth</span>
-            <div id="metric-queue-depth" class="stat-value">-</div>
-          </div>
-          <div class="metric-card">
-            <span class="stat-label">Total queries</span>
-            <div id="metric-total-queries" class="stat-value">-</div>
-          </div>
-          <div class="metric-card">
-            <span class="stat-label">Lock wait</span>
-            <div id="metric-lock-wait" class="stat-value">-</div>
-          </div>
-        </div>
-
-        <div class="surface-header" style="margin-bottom:10px;">
           <div>
-            <div class="eyebrow">Sparkline</div>
-            <h3 style="font-size:24px;">Active workers / queue depth</h3>
+            <label for="insertKorean" class="block font-label-sm text-label-sm text-on-surface-variant mb-xs">Korean</label>
+            <input id="insertKorean" type="text" autocomplete="off"
+              class="w-full h-12 px-md rounded-lg bg-surface-container-lowest border border-surface-variant focus:border-primary focus:ring-2 focus:ring-primary-container/20 font-body-md text-body-md outline-none"
+              placeholder="사과"/>
           </div>
         </div>
-        <div id="stats-sparkline" class="sparkline" aria-live="polite"></div>
-        <p class="caption" id="stats-endpoint-status">
-          `/api/stats` 응답을 기다리는 중.
-        </p>
+        <button id="insertBtn" type="button"
+          class="w-full bg-secondary-container text-on-secondary-container font-label-sm text-label-sm py-md rounded-full hover:bg-secondary-container/80 transition-colors">
+          Submit Entry
+        </button>
+        <p id="insertFeedback" aria-live="polite" class="font-label-sm text-label-sm text-on-surface-variant min-h-[18px]"></p>
+      </form>
+    </section>
+  </main>
 
-        <div class="surface-header" style="margin:18px 0 10px;">
-          <div>
-            <div class="eyebrow">Recent Polls</div>
-            <h3 style="font-size:24px;">최근 8개 샘플</h3>
-          </div>
-        </div>
-        <div id="stats-timeline" class="timeline"></div>
-      </aside>
-    </div>
+  <!-- ══════════════════════════════════════════════════════════
+       RIGHT COLUMN — Engine Lab + Analytics
+       ══════════════════════════════════════════════════════════ -->
+  <aside class="w-full md:w-1/2 flex flex-col h-screen overflow-y-auto bg-surface-container-lowest">
 
-    <div class="result-grid">
-      <article class="surface">
-        <div class="surface-header">
-          <div>
-            <div class="eyebrow">Outcome Board</div>
-            <h2>요청 집계</h2>
-          </div>
-        </div>
-        <div id="rw-summary-board" class="summary-board"></div>
-        <p class="caption">
-          reader / writer 요청은 동시에 발사된다. 성공 여부는 HTTP status 와 JSON `ok`
-          값을 모두 참고해 판정한다.
-        </p>
-      </article>
+    <!-- TOP: Engine Lab -->
+    <section class="p-lg md:p-xl border-b border-surface-variant">
+      <header class="flex items-center gap-md mb-xl">
+        <span class="material-symbols-outlined text-3xl text-primary" style="font-variation-settings: 'FILL' 1;">science</span>
+        <h2 class="font-display text-display text-on-surface tracking-tight">Engine Lab</h2>
+      </header>
 
-      <article class="surface">
-        <div class="surface-header">
-          <div>
-            <div class="eyebrow">Request Trace</div>
-            <h2>상세 요청 로그</h2>
+      <div class="grid grid-cols-1 gap-lg">
+
+        <!-- Concurrent Stress Test -->
+        <div class="bg-surface rounded-[24px] p-lg border border-surface-variant shadow-[0_4px_20px_rgba(0,0,0,0.02)]">
+          <div class="flex flex-wrap items-center justify-between gap-sm mb-md">
+            <h3 class="font-headline-md text-headline-md text-on-surface">Concurrent Stress Test</h3>
+            <span class="font-label-sm text-label-sm text-on-surface-variant">/api/dict?english=</span>
+          </div>
+          <div class="grid grid-cols-1 sm:grid-cols-2 gap-md mb-md">
+            <div>
+              <label for="stressWord" class="block font-label-sm text-label-sm text-on-surface-variant mb-xs">Target word</label>
+              <input id="stressWord" type="text" value="apple"
+                class="w-full h-10 px-sm rounded-lg bg-surface-container-lowest border border-surface-variant focus:border-primary focus:ring-2 focus:ring-primary-container/20 font-body-md text-body-md outline-none"/>
+            </div>
+            <div>
+              <label for="stressCount" class="block font-label-sm text-label-sm text-on-surface-variant mb-xs">
+                Concurrency: <span id="stressCountValue" class="font-bold text-on-surface">16</span>
+              </label>
+              <input id="stressCount" type="range" min="1" max="64" value="16" class="w-full accent-primary mt-sm"/>
+            </div>
+          </div>
+          <div class="flex gap-md mb-lg">
+            <button id="btnMulti" type="button"
+              class="flex-1 bg-primary text-on-primary py-md rounded-full font-label-sm text-label-sm hover:bg-primary-container transition-transform hover:scale-[1.02] active:scale-95 shadow-sm disabled:opacity-50 disabled:cursor-not-allowed disabled:hover:scale-100">
+              Run Multi-Thread
+            </button>
+            <button id="btnSingle" type="button"
+              class="flex-1 bg-primary text-on-primary py-md rounded-full font-label-sm text-label-sm hover:bg-primary-container transition-transform hover:scale-[1.02] active:scale-95 shadow-sm disabled:opacity-50 disabled:cursor-not-allowed disabled:hover:scale-100">
+              Run Single-Thread
+            </button>
+          </div>
+          <div class="space-y-md">
+            <div>
+              <div class="flex justify-between mb-xs">
+                <span class="font-label-sm text-label-sm text-on-surface-variant">Multi-Thread Performance</span>
+                <span id="multiResult" class="font-label-sm text-label-sm text-primary font-bold">-- ms</span>
+              </div>
+              <div class="w-full bg-surface-container h-2 rounded-full overflow-hidden">
+                <div id="multiBar" class="bg-primary h-full rounded-full" style="width:0%; transition: width 0.5s ease-out;"></div>
+              </div>
+            </div>
+            <div>
+              <div class="flex justify-between mb-xs">
+                <span class="font-label-sm text-label-sm text-on-surface-variant">Single-Thread Performance</span>
+                <span id="singleResult" class="font-label-sm text-label-sm text-secondary font-bold">-- ms</span>
+              </div>
+              <div class="w-full bg-surface-container h-2 rounded-full overflow-hidden">
+                <div id="singleBar" class="bg-secondary h-full rounded-full" style="width:0%; transition: width 0.5s ease-out;"></div>
+              </div>
+            </div>
+          </div>
+          <p id="stressStatus" aria-live="polite" class="font-label-sm text-label-sm text-on-surface-variant mt-md min-h-[18px]">Ready</p>
+        </div>
+
+        <!-- R/W Contention -->
+        <div class="bg-surface rounded-[24px] p-lg border border-surface-variant shadow-[0_4px_20px_rgba(0,0,0,0.02)]">
+          <div class="flex flex-wrap items-center justify-between gap-sm mb-md">
+            <h3 class="font-headline-md text-headline-md text-on-surface">R/W Contention</h3>
+            <span class="font-label-sm text-label-sm text-on-surface-variant">/api/dict + /api/admin/insert</span>
+          </div>
+          <div class="flex flex-col gap-md">
+            <div class="flex items-center justify-between gap-md">
+              <label for="readIntensity" class="font-label-sm text-label-sm text-on-surface-variant shrink-0">
+                Reader <span id="readIntensityValue" class="font-bold text-on-surface">50</span>
+              </label>
+              <input id="readIntensity" type="range" min="1" max="100" value="50" class="w-1/2 accent-primary"/>
+            </div>
+            <div class="flex items-center justify-between gap-md">
+              <label for="writeIntensity" class="font-label-sm text-label-sm text-on-surface-variant shrink-0">
+                Writer <span id="writeIntensityValue" class="font-bold text-on-surface">10</span>
+              </label>
+              <input id="writeIntensity" type="range" min="0" max="100" value="10" class="w-1/2 accent-tertiary-container"/>
+            </div>
+            <button id="btnContention" type="button"
+              class="flex-1 bg-primary text-on-primary py-md rounded-full font-label-sm text-label-sm hover:bg-primary-container transition-transform hover:scale-[1.02] active:scale-95 shadow-sm disabled:opacity-50 disabled:cursor-not-allowed disabled:hover:scale-100">
+              Start Contention Test
+            </button>
+            <p id="contentionStatus" aria-live="polite" class="font-label-sm text-label-sm text-on-surface-variant min-h-[18px]">Ready</p>
           </div>
         </div>
-        <div class="request-table-wrap">
-          <table class="request-table">
-            <thead>
-              <tr>
-                <th>kind</th>
-                <th>#</th>
-                <th>status</th>
-                <th>elapsed</th>
-                <th>detail</th>
-              </tr>
-            </thead>
-            <tbody id="rw-request-table-body">
-              <tr>
-                <td colspan="5">아직 실행 기록이 없습니다.</td>
-              </tr>
-            </tbody>
-          </table>
+
+      </div>
+    </section>
+
+    <!-- BOTTOM: Analytics Live -->
+    <section class="p-lg md:p-xl flex-1 bg-surface-bright">
+      <header class="flex items-center gap-md mb-xl">
+        <span class="material-symbols-outlined text-3xl text-secondary" style="font-variation-settings: 'FILL' 1;">monitoring</span>
+        <h2 class="font-display text-display text-on-surface tracking-tight">Analytics Live</h2>
+      </header>
+
+      <!-- Sparkline grid -->
+      <div class="grid grid-cols-2 gap-md mb-md">
+        <div class="bg-surface-container-lowest p-md rounded-xl border border-surface-variant shadow-sm flex flex-col justify-between">
+          <span class="font-label-sm text-label-sm text-on-surface-variant mb-sm">Cache Hits</span>
+          <div id="sparklineHits" class="flex items-end gap-xs h-12 opacity-80"></div>
+          <span id="cacheHitsValue" class="font-headline-md text-headline-md text-on-surface mt-sm">0</span>
         </div>
-      </article>
-    </div>
-  </section>
-</main>
+        <div class="bg-surface-container-lowest p-md rounded-xl border border-surface-variant shadow-sm flex flex-col justify-between">
+          <span class="font-label-sm text-label-sm text-on-surface-variant mb-sm">Cache Misses</span>
+          <div id="sparklineMisses" class="flex items-end gap-xs h-12 opacity-80"></div>
+          <span id="cacheMissesValue" class="font-headline-md text-headline-md text-on-surface mt-sm">0</span>
+        </div>
+      </div>
+
+      <!-- Stats summary tiles -->
+      <div class="grid grid-cols-3 gap-md mb-lg">
+        <div class="bg-surface-container-lowest p-md rounded-xl border border-surface-variant">
+          <span class="font-label-sm text-label-sm text-on-surface-variant">Hit Rate</span>
+          <div id="hitRateValue" class="font-headline-md text-headline-md text-on-surface mt-xs">--</div>
+        </div>
+        <div class="bg-surface-container-lowest p-md rounded-xl border border-surface-variant">
+          <span class="font-label-sm text-label-sm text-on-surface-variant">Total Queries</span>
+          <div id="totalQueriesValue" class="font-headline-md text-headline-md text-on-surface mt-xs">0</div>
+        </div>
+        <div class="bg-surface-container-lowest p-md rounded-xl border border-surface-variant">
+          <span class="font-label-sm text-label-sm text-on-surface-variant">Lock Wait</span>
+          <div id="lockWaitValue" class="font-headline-md text-headline-md text-on-surface mt-xs">--</div>
+        </div>
+      </div>
+
+      <!-- Request Trace -->
+      <div class="bg-surface-container-lowest rounded-xl border border-surface-variant shadow-sm overflow-hidden">
+        <div class="p-md border-b border-surface-variant bg-surface-container-low flex justify-between items-center gap-sm flex-wrap">
+          <h3 class="font-label-sm text-label-sm text-on-surface-variant uppercase tracking-wider">Request Trace</h3>
+          <span id="pollStatus" class="font-label-sm text-label-sm text-on-surface-variant">polling /api/stats…</span>
+        </div>
+        <ul id="traceTable" class="divide-y divide-surface-variant max-h-[320px] overflow-y-auto trace-scroll">
+          <li class="p-md font-label-sm text-label-sm text-on-surface-variant">아직 요청이 없습니다.</li>
+        </ul>
+      </div>
+    </section>
+
+  </aside>
+</div>
 
 <script>
-  (function () {
-    const MAX_TIMELINE_ROWS = 8;
-    const MAX_SPARKLINE_BARS = 18;
-    const MAX_TABLE_ROWS = 40;
-    const QUERY_TIMEOUT_MS = 8000;
-    const STATS_TIMEOUT_MS = 3000;
-    const TAB_BUTTONS = Array.from(document.querySelectorAll("[data-tab-target]"));
-    const TAB_PANELS = Array.from(document.querySelectorAll(".tab-panel"));
+(function () {
+  "use strict";
 
-    const rwState = {
-      running: false,
-      pollTimer: null,
-      statsHistory: [],
-      requestRows: []
-    };
+  /* ── constants / feature flags ────────────────────────── */
+  const MAX_TRACE_ROWS = 24;
+  const MAX_SPARKLINE_BARS = 10;
+  const STATS_POLL_MS = 1000;
+  const QUERY_TIMEOUT_MS = 8000;
+  const STATS_TIMEOUT_MS = 3000;
+  const AUTOCOMPLETE_DEBOUNCE_MS = 150;
+  /* 용 2차 PR 머지 후 true 로 전환. 이 때 MOCK_WORDS 블록은 제거 가능. */
+  const USE_REAL_AUTOCOMPLETE = false;
 
-    const rwEls = {
-      readers: document.getElementById("rw-readers"),
-      writers: document.getElementById("rw-writers"),
-      pollMs: document.getElementById("rw-poll-ms"),
-      baseId: document.getElementById("rw-base-id"),
-      selectSql: document.getElementById("rw-select-sql"),
-      insertSql: document.getElementById("rw-insert-sql"),
-      run: document.getElementById("rw-run"),
-      refreshStats: document.getElementById("rw-refresh-stats"),
-      runStatus: document.getElementById("rw-run-status"),
-      summaryBoard: document.getElementById("rw-summary-board"),
-      tableBody: document.getElementById("rw-request-table-body"),
-      endpointStatus: document.getElementById("stats-endpoint-status"),
-      timeline: document.getElementById("stats-timeline"),
-      sparkline: document.getElementById("stats-sparkline"),
-      activeWorkers: document.getElementById("metric-active-workers"),
-      queueDepth: document.getElementById("metric-queue-depth"),
-      totalQueries: document.getElementById("metric-total-queries"),
-      lockWait: document.getElementById("metric-lock-wait")
-    };
+  /* ── UI refs ──────────────────────────────────────────── */
+  const searchInput = document.getElementById("searchInput");
+  const searchBtn = document.getElementById("searchBtn");
+  const autocompleteList = document.getElementById("autocompleteList");
+  const dirEnBtn = document.getElementById("dirEnBtn");
+  const dirKoBtn = document.getElementById("dirKoBtn");
+  const wordTitle = document.getElementById("wordTitle");
+  const wordChip = document.getElementById("wordChip");
+  const wordBody = document.getElementById("wordBody");
+  const wordMeta = document.getElementById("wordMeta");
+  const wordMetaCache = document.getElementById("wordMetaCache");
+  const wordMetaElapsed = document.getElementById("wordMetaElapsed");
+  const wordMetaCount = document.getElementById("wordMetaCount");
 
-    function escapeHtml(value) {
-      return String(value)
-        .replace(/&/g, "&amp;")
-        .replace(/</g, "&lt;")
-        .replace(/>/g, "&gt;")
-        .replace(/"/g, "&quot;")
-        .replace(/'/g, "&#39;");
+  const insertEnglish = document.getElementById("insertEnglish");
+  const insertKorean = document.getElementById("insertKorean");
+  const insertBtn = document.getElementById("insertBtn");
+  const insertFeedback = document.getElementById("insertFeedback");
+
+  const stressWord = document.getElementById("stressWord");
+  const stressCount = document.getElementById("stressCount");
+  const stressCountValue = document.getElementById("stressCountValue");
+  const btnMulti = document.getElementById("btnMulti");
+  const btnSingle = document.getElementById("btnSingle");
+  const multiResult = document.getElementById("multiResult");
+  const singleResult = document.getElementById("singleResult");
+  const multiBar = document.getElementById("multiBar");
+  const singleBar = document.getElementById("singleBar");
+  const stressStatus = document.getElementById("stressStatus");
+
+  const readIntensity = document.getElementById("readIntensity");
+  const writeIntensity = document.getElementById("writeIntensity");
+  const readIntensityValue = document.getElementById("readIntensityValue");
+  const writeIntensityValue = document.getElementById("writeIntensityValue");
+  const btnContention = document.getElementById("btnContention");
+  const contentionStatus = document.getElementById("contentionStatus");
+
+  const sparklineHits = document.getElementById("sparklineHits");
+  const sparklineMisses = document.getElementById("sparklineMisses");
+  const cacheHitsValue = document.getElementById("cacheHitsValue");
+  const cacheMissesValue = document.getElementById("cacheMissesValue");
+  const hitRateValue = document.getElementById("hitRateValue");
+  const totalQueriesValue = document.getElementById("totalQueriesValue");
+  const lockWaitValue = document.getElementById("lockWaitValue");
+  const pollStatus = document.getElementById("pollStatus");
+  const traceTable = document.getElementById("traceTable");
+
+  /* ── state ────────────────────────────────────────────── */
+  const state = {
+    direction: "english",
+    traceRows: [],
+    hitsHistory: [],
+    missesHistory: []
+  };
+
+  /* autocomplete mock source — 용 PR 머지 전 임시 데이터 */
+  const MOCK_WORDS = [
+    "apple", "apply", "application", "appoint", "approach", "appropriate",
+    "banana", "basic", "beach", "beautiful", "become", "before", "believe",
+    "cat", "catch", "chair", "change", "character", "check", "choose", "city",
+    "develop", "design", "dictionary", "different", "difficult", "discuss",
+    "ephemeral", "example", "experience", "explain",
+    "family", "fashion", "friend", "future",
+    "game", "good", "government", "group", "grow",
+    "happy", "health", "history", "home", "hope",
+    "idea", "identify", "important", "information", "international",
+    "jungle", "just"
+  ];
+
+  /* ── small utilities ──────────────────────────────────── */
+  function escapeHtml(value) {
+    return String(value == null ? "" : value)
+      .replace(/&/g, "&amp;")
+      .replace(/</g, "&lt;")
+      .replace(/>/g, "&gt;")
+      .replace(/"/g, "&quot;")
+      .replace(/'/g, "&#39;");
+  }
+
+  function formatMs(value) {
+    if (typeof value !== "number" || Number.isNaN(value)) return "--";
+    if (value >= 1000) return (value / 1000).toFixed(2) + " s";
+    return value.toFixed(1) + " ms";
+  }
+
+  function formatNumber(value) {
+    if (typeof value !== "number" || Number.isNaN(value)) return "--";
+    return value.toLocaleString("ko-KR");
+  }
+
+  function tryParseJson(text) {
+    try { return JSON.parse(text); } catch (e) { return null; }
+  }
+
+  function fetchWithTimeout(url, options, timeoutMs) {
+    const controller = new AbortController();
+    const timer = setTimeout(function () { controller.abort(); }, timeoutMs || QUERY_TIMEOUT_MS);
+    return fetch(url, Object.assign({}, options, { signal: controller.signal }))
+      .finally(function () { clearTimeout(timer); });
+  }
+
+  /* ── request trace log (전 페이지 공유) ──────────────── */
+  function pushTrace(entry) {
+    state.traceRows.unshift(entry);
+    if (state.traceRows.length > MAX_TRACE_ROWS) {
+      state.traceRows.length = MAX_TRACE_ROWS;
     }
+    renderTrace();
+  }
 
-    function formatNumber(value) {
-      if (typeof value !== "number" || Number.isNaN(value)) {
-        return "-";
+  function renderTrace() {
+    if (!state.traceRows.length) {
+      traceTable.innerHTML = "<li class=\"p-md font-label-sm text-label-sm text-on-surface-variant\">아직 요청이 없습니다.</li>";
+      return;
+    }
+    traceTable.innerHTML = state.traceRows.map(function (row) {
+      let dotClass = "bg-green-500";
+      let elapsedClass = "text-outline";
+      if (!row.ok) {
+        if (row.status === 0) { dotClass = "bg-error"; elapsedClass = "text-error"; }
+        else { dotClass = "bg-tertiary-container"; elapsedClass = "text-tertiary-container"; }
       }
-      return value.toLocaleString("ko-KR");
+      return "<li class=\"p-md flex justify-between items-center gap-md hover:bg-surface-container transition-colors\">" +
+        "<div class=\"flex items-center gap-md min-w-0\">" +
+        "<span class=\"w-2 h-2 rounded-full shrink-0 " + dotClass + "\"></span>" +
+        "<span class=\"font-body-md text-body-md text-on-surface truncate\">" + escapeHtml(row.label) + "</span>" +
+        "</div>" +
+        "<span class=\"font-label-sm text-label-sm shrink-0 " + elapsedClass + "\">" + escapeHtml(formatMs(row.elapsedMs)) + "</span>" +
+        "</li>";
+    }).join("");
+  }
+
+  /* 공통 fetch wrapper: 결과를 trace 에 기록하고 { ok, status, json, elapsedMs } 반환 */
+  async function tracedFetch(method, path, body) {
+    const startedAt = performance.now();
+    const options = { method: method, headers: { "Accept": "application/json" } };
+    if (body !== undefined && body !== null) {
+      options.headers["Content-Type"] = "application/json";
+      options.body = JSON.stringify(body);
     }
-
-    function formatMs(value) {
-      if (typeof value !== "number" || Number.isNaN(value)) {
-        return "-";
-      }
-      if (value >= 1000) {
-        return (value / 1000).toFixed(2) + " s";
-      }
-      return value.toFixed(1) + " ms";
+    let status = 0;
+    let ok = false;
+    let json = null;
+    try {
+      const resp = await fetchWithTimeout(path, options, QUERY_TIMEOUT_MS);
+      status = resp.status;
+      const text = await resp.text();
+      json = tryParseJson(text);
+      ok = resp.ok && json !== null && json.ok === true;
+    } catch (err) {
+      /* trace 에 실패 상태로 기록만 하고 swallow */
     }
-
-    function isoClock(date) {
-      return date.toLocaleTimeString("ko-KR", {
-        hour12: false,
-        hour: "2-digit",
-        minute: "2-digit",
-        second: "2-digit"
-      });
-    }
-
-    function tryParseJson(text) {
-      try {
-        return JSON.parse(text);
-      } catch (error) {
-        return null;
-      }
-    }
-
-    function previewText(value) {
-      return String(value || "").trim().slice(0, 120) || "empty body";
-    }
-
-    function isRecord(value) {
-      return value !== null && typeof value === "object" && !Array.isArray(value);
-    }
-
-    function fetchWithTimeout(url, options, timeoutMs) {
-      const controller = new AbortController();
-      const timer = window.setTimeout(function () {
-        controller.abort();
-      }, timeoutMs);
-
-      return fetch(url, Object.assign({}, options, {
-        signal: controller.signal
-      })).finally(function () {
-        window.clearTimeout(timer);
-      });
-    }
-
-    function pickNumber(candidate, keys) {
-      for (const key of keys) {
-        if (Object.prototype.hasOwnProperty.call(candidate, key)) {
-          const value = Number(candidate[key]);
-          if (!Number.isNaN(value)) {
-            return value;
-          }
-        }
-      }
-      return null;
-    }
-
-    function lockWaitMsFromStats(stats) {
-      const directMs = pickNumber(stats, ["lock_wait_ms", "lockWaitMs"]);
-      if (directMs !== null) {
-        return directMs;
-      }
-      const nsValue = pickNumber(stats, ["lock_wait_ns_total", "lockWaitNsTotal", "lock_wait_ns"]);
-      if (nsValue !== null) {
-        return nsValue / 1000000;
-      }
-      return null;
-    }
-
-    function normalizeStatsPayload(payload) {
-      const stats = payload && typeof payload === "object" ? payload : {};
-      return {
-        activeWorkers: pickNumber(stats, ["active_workers", "activeWorkers"]),
-        queueDepth: pickNumber(stats, ["queue_depth", "queueDepth"]),
-        totalQueries: pickNumber(stats, ["total_queries", "totalQueries"]),
-        qps: pickNumber(stats, ["qps_last_sec", "qpsLastSec", "qps"]),
-        lockWaitMs: lockWaitMsFromStats(stats)
-      };
-    }
-
-    function hasRecognizedStatsMetrics(stats) {
-      return stats.activeWorkers !== null ||
-        stats.queueDepth !== null ||
-        stats.totalQueries !== null ||
-        stats.qps !== null ||
-        stats.lockWaitMs !== null;
-    }
-
-    function isValidQueryPayload(payload) {
-      return isRecord(payload) && typeof payload.ok === "boolean";
-    }
-
-    function setTab(targetId) {
-      TAB_BUTTONS.forEach(function (button) {
-        const isActive = button.getAttribute("data-tab-target") === targetId;
-        button.classList.toggle("is-active", isActive);
-        button.setAttribute("aria-selected", String(isActive));
-      });
-      TAB_PANELS.forEach(function (panel) {
-        panel.classList.toggle("is-active", panel.id === targetId);
-      });
-    }
-
-    TAB_BUTTONS.forEach(function (button) {
-      button.addEventListener("click", function () {
-        setTab(button.getAttribute("data-tab-target"));
-      });
+    const elapsedMs = performance.now() - startedAt;
+    pushTrace({
+      label: method + " " + path,
+      ok: ok,
+      status: status,
+      elapsedMs: elapsedMs
     });
+    return { ok: ok, status: status, json: json, elapsedMs: elapsedMs };
+  }
 
-    async function fetchStatsSnapshot() {
-      const startedAt = performance.now();
-      try {
-        const response = await fetchWithTimeout("/api/stats", {
-          method: "GET",
-          headers: {
-            "Accept": "application/json, text/plain;q=0.9, */*;q=0.8"
-          }
-        }, STATS_TIMEOUT_MS);
-        const text = await response.text();
-        const json = tryParseJson(text);
-        const normalized = normalizeStatsPayload(json || {});
-        let ok = response.ok;
-        let raw = text;
+  /* ── direction toggle ─────────────────────────────────── */
+  function setDirection(dir) {
+    state.direction = dir;
+    const isEnglish = dir === "english";
+    dirEnBtn.setAttribute("aria-selected", String(isEnglish));
+    dirKoBtn.setAttribute("aria-selected", String(!isEnglish));
+    if (isEnglish) {
+      dirEnBtn.classList.remove("bg-surface-container-high", "text-on-surface");
+      dirEnBtn.classList.add("bg-primary", "text-on-primary");
+      dirKoBtn.classList.remove("bg-primary", "text-on-primary");
+      dirKoBtn.classList.add("bg-surface-container-high", "text-on-surface");
+      searchInput.placeholder = "Search for a word...";
+    } else {
+      dirKoBtn.classList.remove("bg-surface-container-high", "text-on-surface");
+      dirKoBtn.classList.add("bg-primary", "text-on-primary");
+      dirEnBtn.classList.remove("bg-primary", "text-on-primary");
+      dirEnBtn.classList.add("bg-surface-container-high", "text-on-surface");
+      searchInput.placeholder = "단어의 한글 뜻을 입력하세요...";
+    }
+    hideAutocomplete();
+  }
 
-        if (json === null) {
-          ok = false;
-          raw = "invalid JSON payload: " + previewText(text);
-        } else if (!isRecord(json)) {
-          ok = false;
-          raw = "unexpected stats payload shape";
-        } else if (!hasRecognizedStatsMetrics(normalized)) {
-          ok = false;
-          raw = "missing recognized stats keys";
-        }
+  dirEnBtn.addEventListener("click", function () { setDirection("english"); });
+  dirKoBtn.addEventListener("click", function () { setDirection("korean"); });
 
-        return {
-          ok: ok,
-          status: response.status,
-          elapsedMs: performance.now() - startedAt,
-          raw: raw,
-          stats: normalized
-        };
-      } catch (error) {
-        const message = error && error.name === "AbortError"
-          ? "request timed out after " + STATS_TIMEOUT_MS + " ms"
-          : String(error && error.message ? error.message : error);
-        return {
-          ok: false,
-          status: 0,
-          elapsedMs: performance.now() - startedAt,
-          raw: message,
-          stats: normalizeStatsPayload({})
-        };
+  /* ── autocomplete (mock, 용 PR 후 /api/autocomplete 로 교체) ── */
+  let acTimer = null;
+
+  function hideAutocomplete() {
+    autocompleteList.classList.add("hidden");
+    autocompleteList.innerHTML = "";
+  }
+
+  function renderAutocomplete(items) {
+    if (!items || !items.length) {
+      hideAutocomplete();
+      return;
+    }
+    autocompleteList.innerHTML = items.map(function (word) {
+      return "<li role=\"option\" data-word=\"" + escapeHtml(word) + "\" " +
+        "class=\"autocomplete-item p-md font-body-md text-body-md text-on-surface border-b border-surface-variant last:border-b-0 flex items-center gap-sm\">" +
+        "<span class=\"material-symbols-outlined text-base text-outline\">search</span>" +
+        "<span class=\"truncate\">" + escapeHtml(word) + "</span>" +
+        "</li>";
+    }).join("");
+    autocompleteList.classList.remove("hidden");
+  }
+
+  async function refreshAutocomplete(prefix) {
+    const pref = String(prefix || "").trim().toLowerCase();
+    /* PM 규약: ASCII 영어 소문자 only. 한글/대문자/기호는 서버가 400 반환. */
+    if (state.direction !== "english" || !pref || !/^[a-z]+$/.test(pref)) {
+      hideAutocomplete();
+      return;
+    }
+    if (USE_REAL_AUTOCOMPLETE) {
+      const path = "/api/autocomplete?prefix=" + encodeURIComponent(pref) + "&limit=5";
+      const result = await tracedFetch("GET", path);
+      if (result.ok && result.json && Array.isArray(result.json.suggestions)) {
+        renderAutocomplete(result.json.suggestions);
+      } else {
+        hideAutocomplete();
       }
+      return;
     }
+    const matches = MOCK_WORDS.filter(function (w) { return w.startsWith(pref); }).slice(0, 5);
+    renderAutocomplete(matches);
+  }
 
-    async function sendSqlRequest(kind, ordinal, sql) {
-      const startedAt = performance.now();
-      try {
-        const response = await fetchWithTimeout("/api/query", {
-          method: "POST",
-          headers: {
-            "Content-Type": "text/plain"
-          },
-          body: sql
-        }, QUERY_TIMEOUT_MS);
-        const text = await response.text();
-        const json = tryParseJson(text);
-        const hasValidJson = isValidQueryPayload(json);
-        const logicalOk = response.ok && hasValidJson && json.ok === true;
-        let detail;
+  searchInput.addEventListener("input", function () {
+    clearTimeout(acTimer);
+    const value = searchInput.value;
+    acTimer = setTimeout(function () { refreshAutocomplete(value); }, AUTOCOMPLETE_DEBOUNCE_MS);
+  });
 
-        if (json === null) {
-          detail = "invalid JSON response: " + previewText(text || response.statusText);
-        } else if (!hasValidJson) {
-          detail = "missing required `ok` field";
-        } else if (json.ok === false) {
-          detail = json.message || json.error || previewText(JSON.stringify(json));
-        } else {
-          detail = json.message || previewText(JSON.stringify(json));
-        }
+  searchInput.addEventListener("focus", function () {
+    if (searchInput.value.trim()) refreshAutocomplete(searchInput.value);
+  });
 
-        return {
-          kind: kind,
-          ordinal: ordinal,
-          ok: logicalOk,
-          status: response.status,
-          elapsedMs: performance.now() - startedAt,
-          detail: detail
-        };
-      } catch (error) {
-        const message = error && error.name === "AbortError"
-          ? "request timed out after " + QUERY_TIMEOUT_MS + " ms"
-          : String(error && error.message ? error.message : error);
-        return {
-          kind: kind,
-          ordinal: ordinal,
-          ok: false,
-          status: 0,
-          elapsedMs: performance.now() - startedAt,
-          detail: message
-        };
-      }
+  document.addEventListener("click", function (e) {
+    if (!autocompleteList.contains(e.target) && e.target !== searchInput) {
+      hideAutocomplete();
     }
+  });
 
-    function buildWriterSql(template, baseId, index) {
-      const nextId = baseId + index;
-      return template
-        .replaceAll("__ID__", String(nextId))
-        .replaceAll("__NAME__", "writer-" + nextId);
+  autocompleteList.addEventListener("click", function (e) {
+    const li = e.target.closest(".autocomplete-item");
+    if (!li) return;
+    const word = li.getAttribute("data-word") || "";
+    searchInput.value = word;
+    hideAutocomplete();
+    runSearch();
+  });
+
+  /* ── word card rendering ─────────────────────────────── */
+  function showWordMeta(cacheHit, elapsedMs, rowCount) {
+    wordMeta.classList.remove("hidden");
+    wordMeta.classList.add("flex");
+    if (cacheHit === true) {
+      wordMetaCache.textContent = "cache hit";
+      wordMetaCache.className = "px-md py-xs rounded-full font-label-sm text-label-sm bg-primary-fixed-dim text-on-primary-fixed";
+    } else if (cacheHit === false) {
+      wordMetaCache.textContent = "cache miss";
+      wordMetaCache.className = "px-md py-xs rounded-full font-label-sm text-label-sm bg-tertiary-fixed-dim text-on-tertiary-fixed";
+    } else {
+      wordMetaCache.textContent = "no cache";
+      wordMetaCache.className = "px-md py-xs rounded-full font-label-sm text-label-sm bg-surface-container-high text-on-surface-variant";
     }
+    wordMetaElapsed.textContent = "⏱ " + formatMs(elapsedMs);
+    wordMetaCount.textContent = rowCount + " row" + (rowCount === 1 ? "" : "s");
+  }
 
-    function renderSummaryBoard(rows) {
-      if (!rows.length) {
-        rwEls.summaryBoard.innerHTML = "<div class=\"summary-tile\">실행 후 결과가 표시됩니다.</div>";
-        return;
-      }
+  function hideWordMeta() {
+    wordMeta.classList.add("hidden");
+    wordMeta.classList.remove("flex");
+  }
 
-      const readers = rows.filter(function (row) { return row.kind === "reader"; });
-      const writers = rows.filter(function (row) { return row.kind === "writer"; });
-      const okRows = rows.filter(function (row) { return row.ok; });
-      const avgLatency = rows.reduce(function (sum, row) { return sum + row.elapsedMs; }, 0) / rows.length;
+  function renderLoading(query) {
+    wordTitle.textContent = query;
+    wordBody.innerHTML = "<p class=\"font-body-lg text-body-lg text-on-surface-variant\">검색 중…</p>";
+    hideWordMeta();
+  }
 
-      const tiles = [
-        { label: "Reader success", value: okRows.filter(function (row) { return row.kind === "reader"; }).length + " / " + readers.length },
-        { label: "Writer success", value: okRows.filter(function (row) { return row.kind === "writer"; }).length + " / " + writers.length },
-        { label: "Total requests", value: formatNumber(rows.length) },
-        { label: "Average latency", value: formatMs(avgLatency) }
-      ];
-
-      rwEls.summaryBoard.innerHTML = tiles.map(function (tile) {
-        return "<div class=\"summary-tile\"><span class=\"stat-label\">" +
-          escapeHtml(tile.label) +
-          "</span><strong>" +
-          escapeHtml(tile.value) +
-          "</strong></div>";
-      }).join("");
-    }
-
-    function renderRequestTable(rows) {
-      if (!rows.length) {
-        rwEls.tableBody.innerHTML = "<tr><td colspan=\"5\">아직 실행 기록이 없습니다.</td></tr>";
-        return;
-      }
-
-      const slice = rows.slice(0, MAX_TABLE_ROWS);
-      rwEls.tableBody.innerHTML = slice.map(function (row) {
-        const statusClass = row.ok ? "ok" : (row.status === 0 ? "fail" : "warn");
-        const statusText = row.ok ? "ok" : (row.status === 0 ? "network" : "http " + row.status);
-        return "<tr>" +
-          "<td><code>" + escapeHtml(row.kind) + "</code></td>" +
-          "<td>" + escapeHtml(row.ordinal) + "</td>" +
-          "<td class=\"" + statusClass + "\">" + escapeHtml(statusText) + "</td>" +
-          "<td>" + escapeHtml(formatMs(row.elapsedMs)) + "</td>" +
-          "<td>" + escapeHtml(row.detail) + "</td>" +
-          "</tr>";
-      }).join("");
-    }
-
-    function renderStatsMetrics(snapshot) {
-      rwEls.activeWorkers.textContent = formatNumber(snapshot.activeWorkers);
-      rwEls.queueDepth.textContent = formatNumber(snapshot.queueDepth);
-      rwEls.totalQueries.textContent = formatNumber(snapshot.totalQueries);
-      rwEls.lockWait.textContent = formatMs(snapshot.lockWaitMs);
-    }
-
-    function renderSparkline(history) {
-      if (!history.length) {
-        rwEls.sparkline.innerHTML = "<span class=\"status-line\">표시할 stats 샘플이 없습니다.</span>";
-        return;
-      }
-
-      const maxValue = history.reduce(function (acc, item) {
-        return Math.max(acc, item.activeWorkers || 0, item.queueDepth || 0, 1);
-      }, 1);
-
-      const recent = history.slice(-MAX_SPARKLINE_BARS);
-      rwEls.sparkline.innerHTML = recent.map(function (item) {
-        const raw = Math.max(item.activeWorkers || 0, item.queueDepth || 0, 0);
-        const height = Math.max(12, Math.round((raw / maxValue) * 56));
-        const label = "t=" + item.label + " aw=" + (item.activeWorkers ?? "-") + " qd=" + (item.queueDepth ?? "-");
-        return "<div class=\"sparkline-bar\" title=\"" + escapeHtml(label) + "\" style=\"height:" + height + "px\"></div>";
-      }).join("");
-    }
-
-    function renderTimeline(history) {
-      if (!history.length) {
-        rwEls.timeline.innerHTML = "<div class=\"timeline-row\"><span>최근 폴링 내역이 없습니다.</span></div>";
-        return;
-      }
-
-      const recent = history.slice(-MAX_TIMELINE_ROWS).reverse();
-      rwEls.timeline.innerHTML = recent.map(function (item) {
-        const endpointState = item.ok ? "ok" : (item.status === 0 ? "network" : "http " + item.status);
-        return "<div class=\"timeline-row\">" +
-          "<code>" + escapeHtml(item.label) + "</code>" +
-          "<span>aw <strong>" + escapeHtml(formatNumber(item.activeWorkers)) +
-          "</strong> / qd <strong>" + escapeHtml(formatNumber(item.queueDepth)) +
-          "</strong> / tq <strong>" + escapeHtml(formatNumber(item.totalQueries)) + "</strong></span>" +
-          "<span class=\"" + (item.ok ? "ok" : "warn") + "\">" + escapeHtml(endpointState) + "</span>" +
+  function renderResult(query, direction, rows, cacheHit, elapsedMs) {
+    wordTitle.textContent = query;
+    wordChip.textContent = direction === "english" ? "영 → 한" : "한 → 영";
+    if (!rows.length) {
+      wordBody.innerHTML =
+        "<div class=\"flex items-start gap-md\">" +
+        "<span class=\"material-symbols-outlined text-outline mt-xs\">sentiment_dissatisfied</span>" +
+        "<p class=\"font-body-lg text-body-lg text-on-surface-variant\">일치하는 항목이 없습니다.</p>" +
+        "</div>";
+    } else {
+      wordBody.innerHTML = rows.map(function (row, idx) {
+        const englishText = row.english || (direction === "english" ? query : "—");
+        const koreanText = row.korean || (direction === "korean" ? query : "—");
+        const divider = idx < rows.length - 1 ? " pb-lg border-b border-surface-variant" : "";
+        return "<div class=\"" + divider + "\">" +
+          "<div class=\"flex items-start gap-md\">" +
+          "<span class=\"material-symbols-outlined text-outline mt-xs\">menu_book</span>" +
+          "<div class=\"min-w-0 flex-1\">" +
+          "<p class=\"font-label-sm text-label-sm text-on-surface-variant uppercase tracking-wider mb-xs\">Entry " + (idx + 1) + "</p>" +
+          "<p class=\"font-headline-md text-headline-md text-on-surface break-words\">" + escapeHtml(englishText) + "</p>" +
+          "<p class=\"font-body-lg text-body-lg text-secondary break-words mt-xs italic\">" + escapeHtml(koreanText) + "</p>" +
+          "</div>" +
+          "</div>" +
           "</div>";
       }).join("");
     }
+    showWordMeta(cacheHit, elapsedMs, rows.length);
+  }
 
-    async function refreshStatsNow(reason) {
-      const result = await fetchStatsSnapshot();
-      const stats = result.stats;
-      const snapshot = {
-        label: isoClock(new Date()),
-        ok: result.ok,
-        status: result.status,
-        activeWorkers: stats.activeWorkers,
-        queueDepth: stats.queueDepth,
-        totalQueries: stats.totalQueries,
-        lockWaitMs: stats.lockWaitMs,
-        qps: stats.qps
-      };
+  function renderError(query, message) {
+    wordTitle.textContent = query || "(error)";
+    wordBody.innerHTML =
+      "<div class=\"flex items-start gap-md\">" +
+      "<span class=\"material-symbols-outlined text-error mt-xs\">error</span>" +
+      "<p class=\"font-body-lg text-body-lg text-error\">" + escapeHtml(message) + "</p>" +
+      "</div>";
+    hideWordMeta();
+  }
 
-      rwState.statsHistory.push(snapshot);
-      if (rwState.statsHistory.length > 64) {
-        rwState.statsHistory = rwState.statsHistory.slice(-64);
+  function firstStatementError(responseJson) {
+    const engine = responseJson && responseJson.engine;
+    const statements = engine && Array.isArray(engine.statements) ? engine.statements : [];
+    for (const stmt of statements) {
+      if (stmt && stmt.error) return String(stmt.error);
+    }
+    return "";
+  }
+
+  function explainDictFailure(result) {
+    const responseJson = result && result.json;
+    const code = responseJson && responseJson.error
+      ? String(responseJson.error)
+      : "";
+    const stmtError = firstStatementError(responseJson);
+
+    if (code === "not_found") return "일치하는 항목이 없습니다.";
+    if (stmtError === "storage operation failed") {
+      return "dictionary 데이터가 준비되지 않았습니다. fixture 또는 seed 상태를 확인해주세요.";
+    }
+    if (stmtError) return "오류: " + stmtError;
+    if (code) return "오류: " + code;
+    return "오류: status " + (result && result.status);
+  }
+
+  function explainInsertFailure(result) {
+    const responseJson = result && result.json;
+    const code = responseJson && responseJson.error
+      ? String(responseJson.error)
+      : "";
+
+    if (code === "not_found" || result.status === 404) {
+      return "/api/admin/insert 가 아직 머지되지 않았습니다.";
+    }
+    if (code) return "실패: " + code;
+    return "실패: status " + result.status;
+  }
+
+  /* /api/dict 응답의 engine.rows (배열의 배열) + columns → [{english, korean}, ...] */
+  function extractRows(responseJson) {
+    const engine = responseJson && responseJson.engine;
+    if (!engine || !Array.isArray(engine.columns) || !Array.isArray(engine.rows)) {
+      return [];
+    }
+    const cols = engine.columns;
+    return engine.rows.map(function (arr) {
+      const obj = {};
+      for (let i = 0; i < cols.length; i++) {
+        obj[cols[i]] = Array.isArray(arr) ? arr[i] : undefined;
       }
+      return obj;
+    });
+  }
 
-      renderStatsMetrics(snapshot);
-      renderSparkline(rwState.statsHistory);
-      renderTimeline(rwState.statsHistory);
+  async function runSearch() {
+    const raw = searchInput.value.trim();
+    if (!raw) {
+      renderError("(empty)", "검색어를 입력하세요.");
+      return;
+    }
+    hideAutocomplete();
+    renderLoading(raw);
+    const param = state.direction === "english" ? "english" : "korean";
+    const path = "/api/dict?" + param + "=" + encodeURIComponent(raw);
+    const result = await tracedFetch("GET", path);
 
-      if (result.ok) {
-        rwEls.endpointStatus.textContent =
-          "/api/stats " + reason + ": " + result.status + " in " + formatMs(result.elapsedMs);
-      } else {
-        rwEls.endpointStatus.textContent =
-          "/api/stats " + reason + " 실패: " + (result.status || "network error") + " · " + result.raw;
+    if (!result.json) {
+      renderError(raw, "서버 응답을 해석할 수 없습니다 (status " + result.status + ").");
+      return;
+    }
+    if (result.json.ok !== true) {
+      renderError(raw, explainDictFailure(result));
+      return;
+    }
+    const rows = extractRows(result.json);
+    /* 한글 역방향은 dict cache 미적용 (서버 쪽에서도 false 로 내려옴) → null 로 표시 */
+    const cacheHit = state.direction === "english"
+      ? Boolean(result.json.cache_hit)
+      : null;
+    renderResult(raw, state.direction, rows, cacheHit, result.elapsedMs);
+  }
+
+  searchBtn.addEventListener("click", function () { runSearch(); });
+  searchInput.addEventListener("keydown", function (e) {
+    if (e.key === "Enter") {
+      e.preventDefault();
+      runSearch();
+    } else if (e.key === "Escape") {
+      hideAutocomplete();
+    }
+  });
+
+  /* ── admin insert ─────────────────────────────────────── */
+  async function runInsert() {
+    const english = insertEnglish.value.trim();
+    const korean = insertKorean.value.trim();
+    if (!english || !korean) {
+      insertFeedback.textContent = "english / korean 두 필드를 모두 채워주세요.";
+      insertFeedback.className = "font-label-sm text-label-sm text-error min-h-[18px]";
+      return;
+    }
+    insertBtn.disabled = true;
+    insertFeedback.textContent = "전송 중...";
+    insertFeedback.className = "font-label-sm text-label-sm text-on-surface-variant min-h-[18px]";
+
+    const result = await tracedFetch("POST", "/api/admin/insert", {
+      english: english,
+      korean: korean
+    });
+    insertBtn.disabled = false;
+
+    if (result.ok === true) {
+      /* 용 형님 피드백: row_id 는 사용하지 않음. response.english 또는 요청값으로 UI 반영. */
+      const shownEnglish = (result.json && result.json.english) || english;
+      const shownKorean = korean;
+      insertFeedback.textContent = "추가됨: " + shownEnglish + "  (" + formatMs(result.elapsedMs) + ")";
+      insertFeedback.className = "font-label-sm text-label-sm text-primary min-h-[18px]";
+      insertEnglish.value = "";
+      insertKorean.value = "";
+      setDirection("english");
+      searchInput.value = shownEnglish;
+      renderResult(shownEnglish, "english", [{
+        english: shownEnglish,
+        korean: shownKorean
+      }], null, result.elapsedMs);
+      /* 최신 상태를 반영하려고 현재 검색창 prefix 로 autocomplete 재조회.
+       * USE_REAL_AUTOCOMPLETE=true 가 되면 /api/autocomplete 를 다시 호출. */
+      refreshAutocomplete(shownEnglish);
+    } else {
+      insertFeedback.textContent = explainInsertFailure(result);
+      insertFeedback.className = "font-label-sm text-label-sm text-error min-h-[18px]";
+    }
+  }
+
+  insertBtn.addEventListener("click", runInsert);
+  [insertEnglish, insertKorean].forEach(function (el) {
+    el.addEventListener("keydown", function (e) {
+      if (e.key === "Enter") {
+        e.preventDefault();
+        runInsert();
       }
+    });
+  });
+
+  /* ── stress test (multi vs single on /api/dict) ──────── */
+  stressCount.addEventListener("input", function () {
+    stressCountValue.textContent = stressCount.value;
+  });
+
+  function setStressBusy(isBusy, message) {
+    btnMulti.disabled = isBusy;
+    btnSingle.disabled = isBusy;
+    if (message !== undefined) stressStatus.textContent = message;
+  }
+
+  function parseMs(text) {
+    const n = parseFloat(text);
+    return Number.isNaN(n) ? null : n;
+  }
+
+  function normalizeStressBars() {
+    const multiMs = parseMs(multiResult.textContent);
+    const singleMs = parseMs(singleResult.textContent);
+    const maxMs = Math.max(multiMs || 0, singleMs || 0, 1);
+    if (multiMs !== null) {
+      multiBar.style.width = Math.max(4, Math.min(100, (multiMs / maxMs) * 100)) + "%";
+    }
+    if (singleMs !== null) {
+      singleBar.style.width = Math.max(4, Math.min(100, (singleMs / maxMs) * 100)) + "%";
+    }
+  }
+
+  async function runStressMulti() {
+    const word = stressWord.value.trim();
+    const n = Math.max(1, Number(stressCount.value) || 1);
+    if (!word) {
+      setStressBusy(false, "target word 를 입력하세요.");
+      return;
+    }
+    setStressBusy(true, "multi-thread 중 (" + n + " parallel)…");
+    const path = "/api/dict?english=" + encodeURIComponent(word);
+    const startedAt = performance.now();
+    const jobs = [];
+    for (let i = 0; i < n; i++) jobs.push(tracedFetch("GET", path));
+    await Promise.all(jobs);
+    const elapsed = performance.now() - startedAt;
+    multiResult.textContent = elapsed.toFixed(1) + " ms";
+    normalizeStressBars();
+    setStressBusy(false, "multi-thread 완료: " + formatMs(elapsed));
+  }
+
+  async function runStressSingle() {
+    const word = stressWord.value.trim();
+    const n = Math.max(1, Number(stressCount.value) || 1);
+    if (!word) {
+      setStressBusy(false, "target word 를 입력하세요.");
+      return;
+    }
+    setStressBusy(true, "single-thread 중 (" + n + " sequential)…");
+    const path = "/api/dict?english=" + encodeURIComponent(word);
+    const startedAt = performance.now();
+    for (let i = 0; i < n; i++) {
+      await tracedFetch("GET", path);
+    }
+    const elapsed = performance.now() - startedAt;
+    singleResult.textContent = elapsed.toFixed(1) + " ms";
+    normalizeStressBars();
+    setStressBusy(false, "single-thread 완료: " + formatMs(elapsed));
+  }
+
+  btnMulti.addEventListener("click", runStressMulti);
+  btnSingle.addEventListener("click", runStressSingle);
+
+  /* ── R/W contention (readers on /api/dict + writers on /api/admin/insert) ── */
+  readIntensity.addEventListener("input", function () {
+    readIntensityValue.textContent = readIntensity.value;
+  });
+  writeIntensity.addEventListener("input", function () {
+    writeIntensityValue.textContent = writeIntensity.value;
+  });
+
+  function randomAsciiWord(len) {
+    const chars = "abcdefghijklmnopqrstuvwxyz";
+    let out = "";
+    for (let i = 0; i < len; i++) {
+      out += chars.charAt(Math.floor(Math.random() * 26));
+    }
+    return out;
+  }
+
+  async function runContention() {
+    const r = Math.max(1, Number(readIntensity.value) || 0);
+    const w = Math.max(0, Number(writeIntensity.value) || 0);
+
+    btnContention.disabled = true;
+    contentionStatus.textContent = "reader " + r + " / writer " + w + " 실행 중…";
+
+    /* reader 는 apple 고정 — 캐시 히트 포함 읽기 부하를 만들기 위함 */
+    const readerPath = "/api/dict?english=apple";
+    const readerJobs = [];
+    for (let i = 0; i < r; i++) readerJobs.push(tracedFetch("GET", readerPath));
+
+    /* writer 는 임의 ASCII 단어 (trie 입력 규약 a-z 준수) */
+    const writerJobs = [];
+    for (let i = 0; i < w; i++) {
+      writerJobs.push(tracedFetch("POST", "/api/admin/insert", {
+        english: "rw" + randomAsciiWord(6),
+        korean: "더미-" + i
+      }));
     }
 
-    function startStatsPolling() {
-      const pollMs = Math.max(250, Number(rwEls.pollMs.value) || 1000);
-      stopStatsPolling();
-      rwState.pollTimer = window.setInterval(function () {
-        refreshStatsNow("poll");
-      }, pollMs);
-    }
+    const startedAt = performance.now();
+    const all = await Promise.all(readerJobs.concat(writerJobs));
+    const elapsed = performance.now() - startedAt;
+    const okCount = all.filter(function (x) { return x.ok; }).length;
+    const writerBlocked = all.slice(readerJobs.length).some(function (x) {
+      return x && (x.status === 404 || (x.json && x.json.error === "not_found"));
+    });
 
-    function stopStatsPolling() {
-      if (rwState.pollTimer !== null) {
-        window.clearInterval(rwState.pollTimer);
-        rwState.pollTimer = null;
+    btnContention.disabled = false;
+    if (writerBlocked) {
+      contentionStatus.textContent =
+        "완료: writer endpoint unavailable, " + okCount + " / " + all.length + " ok, 총 " + formatMs(elapsed);
+      return;
+    }
+    contentionStatus.textContent =
+      "완료: " + okCount + " / " + all.length + " ok, 총 " + formatMs(elapsed);
+  }
+
+  btnContention.addEventListener("click", runContention);
+
+  /* ── stats polling (/api/stats 1초 간격) ────────────── */
+  function pushSparkValue(arr, value) {
+    arr.push(value);
+    if (arr.length > MAX_SPARKLINE_BARS) {
+      arr.splice(0, arr.length - MAX_SPARKLINE_BARS);
+    }
+  }
+
+  function renderSparkline(el, values, baseClass, activeClass) {
+    if (!values.length) {
+      el.innerHTML = "";
+      for (let i = 0; i < MAX_SPARKLINE_BARS; i++) {
+        el.innerHTML += "<div class=\"sparkline-bar w-full " + baseClass + " rounded-t-sm\" style=\"height:4px\"></div>";
       }
+      return;
     }
-
-    function setRunningState(running, message) {
-      rwState.running = running;
-      rwEls.run.disabled = running;
-      rwEls.refreshStats.disabled = running;
-      rwEls.runStatus.innerHTML = "<strong>" + escapeHtml(message) + "</strong>";
+    const maxVal = values.reduce(function (m, v) { return Math.max(m, v); }, 1);
+    const bars = [];
+    const lastIdx = values.length - 1;
+    for (let i = 0; i < values.length; i++) {
+      const v = values[i] != null ? values[i] : 0;
+      const pct = Math.max(8, Math.round((v / maxVal) * 100));
+      const bg = i === lastIdx ? activeClass : baseClass;
+      bars.push("<div class=\"sparkline-bar w-full " + bg + " rounded-t-sm\" style=\"height:" + pct + "%\"></div>");
     }
+    /* 남은 자리 채우기 (왼쪽 shrink 회피) */
+    for (let i = values.length; i < MAX_SPARKLINE_BARS; i++) {
+      bars.unshift("<div class=\"sparkline-bar w-full " + baseClass + " rounded-t-sm opacity-30\" style=\"height:4px\"></div>");
+    }
+    el.innerHTML = bars.join("");
+  }
 
-    async function runRwScenario() {
-      const readerCount = Math.max(1, Number(rwEls.readers.value) || 0);
-      const writerCount = Math.max(1, Number(rwEls.writers.value) || 0);
-      const baseId = Math.max(1, Number(rwEls.baseId.value) || 0);
-      const readerSql = rwEls.selectSql.value.trim();
-      const writerTemplate = rwEls.insertSql.value.trim();
-
-      if (!readerSql || !writerTemplate) {
-        setRunningState(false, "reader / writer SQL 을 모두 채워야 합니다.");
+  async function pollStats() {
+    try {
+      const resp = await fetchWithTimeout("/api/stats", {
+        method: "GET",
+        headers: { "Accept": "application/json" }
+      }, STATS_TIMEOUT_MS);
+      const text = await resp.text();
+      const json = tryParseJson(text);
+      if (!json || json.ok !== true) {
+        pollStatus.textContent = "/api/stats: invalid payload";
         return;
       }
+      const hits = Number(json.cache_hits) || 0;
+      const misses = Number(json.cache_misses) || 0;
+      const totalQueries = Number(json.total_queries) || 0;
+      const lockWaitNs = Number(json.lock_wait_ns_total) || 0;
+      const lockWaitMs = lockWaitNs / 1e6;
 
-      rwState.requestRows = [];
-      renderSummaryBoard([]);
-      renderRequestTable([]);
-      rwState.statsHistory = [];
-      renderSparkline([]);
-      renderTimeline([]);
+      cacheHitsValue.textContent = formatNumber(hits);
+      cacheMissesValue.textContent = formatNumber(misses);
+      totalQueriesValue.textContent = formatNumber(totalQueries);
+      lockWaitValue.textContent = formatMs(lockWaitMs);
 
-      setRunningState(true, "reader " + readerCount + " / writer " + writerCount + " 실행 중");
-      try {
-        await refreshStatsNow("before run");
-        startStatsPolling();
+      const totalCache = hits + misses;
+      hitRateValue.textContent = totalCache > 0
+        ? ((hits / totalCache) * 100).toFixed(1) + "%"
+        : "--";
 
-        const readerTasks = Array.from({ length: readerCount }, function (_, index) {
-          return sendSqlRequest("reader", index + 1, readerSql);
-        });
-        const writerTasks = Array.from({ length: writerCount }, function (_, index) {
-          return sendSqlRequest("writer", index + 1, buildWriterSql(writerTemplate, baseId, index));
-        });
+      pushSparkValue(state.hitsHistory, hits);
+      pushSparkValue(state.missesHistory, misses);
+      renderSparkline(sparklineHits, state.hitsHistory, "bg-primary-fixed-dim", "bg-primary");
+      renderSparkline(sparklineMisses, state.missesHistory, "bg-tertiary-fixed-dim", "bg-tertiary-container");
 
-        const rows = await Promise.all(readerTasks.concat(writerTasks));
-        stopStatsPolling();
-        await refreshStatsNow("after run");
-
-        rows.sort(function (a, b) {
-          if (a.kind === b.kind) {
-            return a.ordinal - b.ordinal;
-          }
-          return a.kind === "reader" ? -1 : 1;
-        });
-
-        rwState.requestRows = rows;
-        renderSummaryBoard(rows);
-        renderRequestTable(rows);
-
-        const okCount = rows.filter(function (row) { return row.ok; }).length;
-        setRunningState(false, okCount + " / " + rows.length + " 요청 성공");
-      } catch (error) {
-        renderSummaryBoard([]);
-        renderRequestTable([]);
-        setRunningState(false, "RW 실행 실패: " + String(error && error.message ? error.message : error));
-      } finally {
-        stopStatsPolling();
-      }
-    }
-
-    rwEls.run.addEventListener("click", function () {
-      if (!rwState.running) {
-        runRwScenario();
-      }
-    });
-
-    rwEls.refreshStats.addEventListener("click", function () {
-      refreshStatsNow("manual refresh");
-    });
-
-    renderSummaryBoard([]);
-    renderRequestTable([]);
-    renderSparkline([]);
-    renderTimeline([]);
-  })();
-
-  /* ── tab (a) Concurrent Stress — 용 형님 stress.html 에서 이식 ──── */
-  (function stressModule() {
-    const form = document.getElementById("stress-form");
-    const sqlInput = document.getElementById("stress-sql");
-    const countInput = document.getElementById("stress-concurrency");
-    const countValue = document.getElementById("stress-count-value");
-    const runButton = document.getElementById("stress-run");
-    const statusEl = document.getElementById("stress-status");
-    const errorEl = document.getElementById("stress-error");
-    const multiSummary = document.getElementById("stress-multi-summary");
-    const singleSummary = document.getElementById("stress-single-summary");
-    const multiBar = document.getElementById("stress-multi-bar");
-    const singleBar = document.getElementById("stress-single-bar");
-
-    if (!form || !runButton) return;
-
-    countInput.addEventListener("input", function () {
-      countValue.textContent = countInput.value;
-    });
-
-    async function postSql(path, sql) {
-      const response = await fetch(path, {
-        method: "POST",
-        headers: { "Content-Type": "text/plain" },
-        body: sql
+      pollStatus.textContent = "last poll " + new Date().toLocaleTimeString("ko-KR", {
+        hour12: false, hour: "2-digit", minute: "2-digit", second: "2-digit"
       });
-      await response.text();
-      return { ok: response.ok };
+    } catch (err) {
+      pollStatus.textContent = "/api/stats 폴링 실패";
     }
+  }
 
-    async function runBatch(path, sql, count) {
-      const started = performance.now();
-      const jobs = Array.from({ length: count }, function () {
-        return postSql(path, sql);
-      });
-      const settled = await Promise.allSettled(jobs);
-      const elapsed = performance.now() - started;
-      const okCount = settled.filter(function (item) {
-        return item.status === "fulfilled" && item.value.ok;
-      }).length;
-      return { elapsed: elapsed, okCount: okCount };
-    }
-
-    function renderResult(barEl, summaryEl, result, maxMs, count) {
-      const elapsed = Math.round(result.elapsed);
-      const widthPct = maxMs > 0
-        ? Math.max(4, Math.round((elapsed / maxMs) * 100))
-        : 0;
-      summaryEl.textContent = elapsed + " ms, " + result.okCount + "/" + count + " ok";
-      barEl.style.width = Math.min(widthPct, 100) + "%";
-    }
-
-    runButton.addEventListener("click", async function () {
-      const sql = sqlInput.value.trim();
-      const count = Number(countInput.value);
-
-      if (!sql) {
-        errorEl.textContent = "SQL 이 비어있음.";
-        return;
-      }
-
-      errorEl.textContent = "";
-      runButton.disabled = true;
-      statusEl.textContent = "Running…";
-
-      try {
-        const multi = await runBatch("/api/query", sql, count);
-        const single = await runBatch("/api/query?mode=single", sql, count);
-        const maxMs = Math.max(multi.elapsed, single.elapsed);
-        renderResult(multiBar, multiSummary, multi, maxMs, count);
-        renderResult(singleBar, singleSummary, single, maxMs, count);
-        statusEl.textContent = "Complete";
-      } catch (err) {
-        errorEl.textContent = (err && err.message) ? err.message : "Request failed.";
-        statusEl.textContent = "Failed";
-      } finally {
-        runButton.disabled = false;
-      }
-    });
-  })();
+  /* ── init ─────────────────────────────────────────────── */
+  setDirection("english");
+  renderTrace();
+  renderSparkline(sparklineHits, [], "bg-primary-fixed-dim", "bg-primary");
+  renderSparkline(sparklineMisses, [], "bg-tertiary-fixed-dim", "bg-tertiary-container");
+  pollStats();
+  setInterval(pollStats, STATS_POLL_MS);
+})();
 </script>
 </body>
 </html>
