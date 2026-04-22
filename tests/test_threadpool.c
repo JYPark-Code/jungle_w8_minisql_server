@@ -544,6 +544,239 @@ static void test_single_worker_fifo(void) {
     order_ctx_destroy(&ctx);
 }
 
+/* ── Round 2 — 동적 리사이즈 + graceful shutdown 테스트 (지용) ───────── */
+
+#include <string.h>
+#include <time.h>
+
+/* 간단한 busy-work job: atomic counter 증가만. */
+typedef struct busy_ctx {
+    pthread_mutex_t mutex;
+    pthread_cond_t  cond;
+    int             completed;
+    int             target;
+} busy_ctx_t;
+
+static void busy_ctx_init(busy_ctx_t *c, int target) {
+    pthread_mutex_init(&c->mutex, NULL);
+    pthread_cond_init(&c->cond, NULL);
+    c->completed = 0;
+    c->target    = target;
+}
+static void busy_ctx_destroy(busy_ctx_t *c) {
+    pthread_cond_destroy(&c->cond);
+    pthread_mutex_destroy(&c->mutex);
+}
+static void busy_ctx_wait_all(busy_ctx_t *c) {
+    pthread_mutex_lock(&c->mutex);
+    while (c->completed < c->target) {
+        pthread_cond_wait(&c->cond, &c->mutex);
+    }
+    pthread_mutex_unlock(&c->mutex);
+}
+
+static void busy_job_short(void *arg) {
+    busy_ctx_t *c = (busy_ctx_t *)arg;
+    struct timespec ts = { 0, 5 * 1000 * 1000L };  /* 5 ms */
+    nanosleep(&ts, NULL);
+    pthread_mutex_lock(&c->mutex);
+    c->completed++;
+    if (c->completed >= c->target) {
+        pthread_cond_broadcast(&c->cond);
+    }
+    pthread_mutex_unlock(&c->mutex);
+}
+
+/* T1. 기본 utilization 0.0 확인 */
+static void test_utilization_idle(void) {
+    printf("[TEST] R2 utilization idle → 0.0\n");
+    threadpool_t *tp = threadpool_create(4);
+    CHECK(tp != NULL, "threadpool_create 성공");
+    double u = threadpool_get_utilization(tp);
+    CHECK(u == 0.0, "idle pool utilization == 0.0");
+    CHECK(threadpool_total_workers(tp) == 4, "초기 worker 수 = 4");
+    threadpool_shutdown(tp);
+}
+
+/* T2. threadpool_resize 수동 확장 */
+static void test_resize_expand(void) {
+    printf("[TEST] R2 threadpool_resize expand\n");
+    threadpool_t *tp = threadpool_create(4);
+    CHECK(tp != NULL, "create 성공");
+
+    CHECK(threadpool_resize(tp, 8) == 0, "resize 4→8 성공");
+    CHECK(threadpool_total_workers(tp) == 8, "total_workers == 8");
+
+    /* cap 넘어가면 cap 으로 클램프 */
+    CHECK(threadpool_resize(tp, 100) == 0, "resize 요청 100 → cap 으로 클램프");
+    CHECK(threadpool_total_workers(tp) == 16, "cap 16 으로 클램프됨");
+
+    threadpool_shutdown(tp);
+}
+
+/* T3. threadpool_resize 수동 축소 — floor 로 클램프 */
+static void test_resize_shrink(void) {
+    printf("[TEST] R2 threadpool_resize shrink\n");
+    threadpool_t *tp = threadpool_create(4);  /* floor = 4 */
+
+    threadpool_resize(tp, 12);
+    CHECK(threadpool_total_workers(tp) == 12, "12 까지 확장");
+
+    CHECK(threadpool_resize(tp, 8) == 0, "resize 12→8 성공");
+    CHECK(threadpool_total_workers(tp) == 8, "total_workers == 8");
+
+    /* floor 아래 요청 → floor 로 클램프 */
+    CHECK(threadpool_resize(tp, 1) == 0, "resize 요청 1 → floor 클램프");
+    CHECK(threadpool_total_workers(tp) == 4, "floor 4 로 클램프됨");
+
+    threadpool_shutdown(tp);
+}
+
+/* T4. shrink 후에도 submit 한 job 모두 실행됨 (잔여 worker 가 받음) */
+static void test_resize_shrink_still_executes(void) {
+    printf("[TEST] R2 shrink 후에도 job 실행 지속\n");
+    threadpool_t *tp = threadpool_create(4);
+    threadpool_resize(tp, 12);
+
+    busy_ctx_t ctx;
+    busy_ctx_init(&ctx, 200);
+    for (int i = 0; i < 200; i++) {
+        threadpool_submit(tp, busy_job_short, &ctx);
+    }
+    /* submit 도중 shrink */
+    threadpool_resize(tp, 4);
+
+    busy_ctx_wait_all(&ctx);
+    CHECK(ctx.completed == 200, "shrink 후에도 200 jobs 모두 완료");
+
+    busy_ctx_destroy(&ctx);
+    threadpool_shutdown(tp);
+}
+
+/* T5. graceful shutdown: drain 성공 경로 */
+static void test_graceful_shutdown_drains(void) {
+    printf("[TEST] R2 graceful shutdown drain\n");
+    threadpool_t *tp = threadpool_create(4);
+
+    busy_ctx_t ctx;
+    busy_ctx_init(&ctx, 50);
+    for (int i = 0; i < 50; i++) {
+        threadpool_submit(tp, busy_job_short, &ctx);
+    }
+
+    /* 50 job × 5ms = 250ms 예상. timeout 5000ms → 성공해야 함 */
+    int rc = threadpool_shutdown_graceful(tp, 5000);
+    CHECK(rc == 0, "graceful shutdown drain 성공 (timeout 여유)");
+    CHECK(ctx.completed == 50, "drain 으로 모든 job 완료");
+
+    busy_ctx_destroy(&ctx);
+    /* tp 는 이미 shutdown 완료 — free 는 내부에서. */
+}
+
+/* busy job: 100ms 슬립 — graceful timeout 테스트용 */
+static void slow_job_100ms(void *arg) {
+    busy_ctx_t *c = (busy_ctx_t *)arg;
+    struct timespec ts = { 0, 100 * 1000 * 1000L };
+    nanosleep(&ts, NULL);
+    pthread_mutex_lock(&c->mutex);
+    c->completed++;
+    pthread_cond_broadcast(&c->cond);
+    pthread_mutex_unlock(&c->mutex);
+}
+
+/* T6. graceful shutdown: timeout 초과 경로 */
+static void test_graceful_shutdown_timeout(void) {
+    printf("[TEST] R2 graceful shutdown timeout\n");
+    threadpool_t *tp = threadpool_create(2);   /* 작은 pool 에 많은 job */
+
+    busy_ctx_t ctx;
+    busy_ctx_init(&ctx, 100);
+    for (int i = 0; i < 100; i++) {
+        threadpool_submit(tp, slow_job_100ms, &ctx);
+    }
+
+    /* 100 × 100ms / 2 worker = 5000ms 예상. timeout 500ms → 초과 */
+    int rc = threadpool_shutdown_graceful(tp, 500);
+    CHECK(rc == -1, "graceful shutdown timeout 초과 시 -1 반환");
+
+    busy_ctx_destroy(&ctx);
+}
+
+/* T7. submit_closed 이후 submit 실패 경로.
+ * graceful 과 submit 의 타이밍을 명확히 강제하기 위해 별도 스레드에서 graceful
+ * 을 호출하고, main 스레드에서 submit 을 시도. */
+typedef struct {
+    threadpool_t *tp;
+    int           timeout_ms;
+    int           rc;
+} gs_thread_arg_t;
+
+static void *gs_thread_fn(void *arg) {
+    gs_thread_arg_t *a = (gs_thread_arg_t *)arg;
+    a->rc = threadpool_shutdown_graceful(a->tp, a->timeout_ms);
+    return NULL;
+}
+
+static void test_graceful_submit_closed(void) {
+    printf("[TEST] R2 graceful 진행 중 submit 거부\n");
+    threadpool_t *tp = threadpool_create(2);
+
+    busy_ctx_t ctx;
+    busy_ctx_init(&ctx, 10);
+    /* 긴 job 10 개 submit → drain 에 시간이 걸리도록 유도 */
+    for (int i = 0; i < 10; i++) {
+        threadpool_submit(tp, slow_job_100ms, &ctx);
+    }
+
+    /* 별도 스레드에서 graceful shutdown 시작 (5s 여유) */
+    gs_thread_arg_t ga = { tp, 5000, 0 };
+    pthread_t gs_thread;
+    pthread_create(&gs_thread, NULL, gs_thread_fn, &ga);
+
+    /* submit_closed 플래그가 세팅될 시간 짧게 여유 */
+    struct timespec ts = { 0, 20 * 1000 * 1000L };  /* 20 ms */
+    nanosleep(&ts, NULL);
+
+    /* 이 시점엔 graceful 진행 중 — submit 은 -1 반환해야 함 */
+    int rc_submit = threadpool_submit(tp, busy_job_short, &ctx);
+    CHECK(rc_submit == -1, "graceful 진행 중 submit 은 -1 반환");
+
+    /* graceful 완료 대기 */
+    pthread_join(gs_thread, NULL);
+    CHECK(ga.rc == 0, "10 job drain 성공 (5s 여유)");
+    CHECK(ctx.completed == 10, "모든 slow job 완료됨");
+
+    busy_ctx_destroy(&ctx);
+}
+
+/* T8. utilization 값이 0.0 ~ 1.0 범위 */
+static void test_utilization_range(void) {
+    printf("[TEST] R2 utilization 범위\n");
+    threadpool_t *tp = threadpool_create(4);
+
+    double u = threadpool_get_utilization(tp);
+    CHECK(u >= 0.0 && u <= 1.0, "utilization 0.0 ~ 1.0");
+
+    threadpool_shutdown(tp);
+}
+
+/* T9. resize 후 shutdown 정상 동작 (자원 누수 없음) */
+static void test_resize_then_shutdown(void) {
+    printf("[TEST] R2 resize 후 shutdown 정상\n");
+    threadpool_t *tp = threadpool_create(4);
+
+    threadpool_resize(tp, 16);
+    threadpool_resize(tp, 8);
+    threadpool_resize(tp, 12);
+    threadpool_resize(tp, 4);
+
+    CHECK(threadpool_total_workers(tp) == 4, "여러 번 resize 후 최종 4");
+
+    /* 정상 shutdown 되면 valgrind 가 누수 잡음 (별도 잡) */
+    threadpool_shutdown(tp);
+    CHECK(1, "resize 반복 후 shutdown 완료");
+}
+
 int main(void) {
     printf("=== test_threadpool ===\n");
 
@@ -554,6 +787,17 @@ int main(void) {
     test_submit_rejects_invalid_args();
     test_metrics_snapshot();
     test_single_worker_fifo();
+
+    /* Round 2 — 동적 리사이즈 + graceful shutdown */
+    test_utilization_idle();
+    test_resize_expand();
+    test_resize_shrink();
+    test_resize_shrink_still_executes();
+    test_graceful_shutdown_drains();
+    test_graceful_shutdown_timeout();
+    test_graceful_submit_closed();
+    test_utilization_range();
+    test_resize_then_shutdown();
 
     printf("\n[THREADPOOL TESTS] %d passed, %d failed\n", g_passed, g_failed);
     return g_failed == 0 ? 0 : 1;
