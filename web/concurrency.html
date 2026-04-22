@@ -533,6 +533,62 @@
       gap: 6px;
     }
   }
+
+  /* ── tab (a) Concurrent Stress — multi vs single 비교 UI ─────── */
+  .stress-metric {
+    margin-top: 14px;
+  }
+  .stress-metric:first-child {
+    margin-top: 0;
+  }
+  .stress-metric-head {
+    display: flex;
+    justify-content: space-between;
+    gap: 12px;
+    font-weight: 700;
+    color: var(--ink);
+    font-family: var(--body);
+  }
+  .stress-metric-head small {
+    color: var(--muted);
+    font-family: var(--mono);
+    font-size: 13px;
+    font-weight: 500;
+  }
+  .stress-bar-track {
+    height: 14px;
+    border-radius: 6px;
+    background: rgba(255, 255, 255, 0.08);
+    overflow: hidden;
+    margin-top: 8px;
+    border: 1px solid var(--line);
+  }
+  .stress-bar {
+    height: 100%;
+    width: 0%;
+    background: var(--cool);
+    transition: width 0.18s ease;
+  }
+  .stress-bar-single {
+    background: var(--accent);
+  }
+  .stress-endpoint-hint {
+    color: var(--muted);
+    font-family: var(--mono);
+    font-size: 13px;
+  }
+  .stress-error {
+    color: var(--danger);
+    font-size: 13px;
+    min-height: 18px;
+    margin-top: 10px;
+  }
+  #stress-sql {
+    min-height: 80px;
+  }
+  #stress-concurrency {
+    width: 100%;
+  }
 </style>
 </head>
 <body>
@@ -588,54 +644,70 @@
       <article class="surface">
         <div class="surface-header">
           <div>
-            <div class="eyebrow">Shared Shell</div>
-            <h2>탭 (a) 구조 스캐폴드</h2>
+            <div class="eyebrow">Concurrent Stress</div>
+            <h2>싱글 vs 멀티 모드 비교</h2>
           </div>
-          <span class="badge">merge-friendly placeholder</span>
+          <span class="badge">POST /api/query</span>
         </div>
         <p>
-          탭 `(c)` 가 참조해야 하는 탭 구조만 먼저 고정했다. 용 형님 탭 `(a)` 가 합쳐질 때
-          같은 탭 헤더, 같은 카드 헤더, 같은 버튼 행, 같은 결과 보드 구조를 그대로 재사용할 수 있다.
+          같은 SQL 을 N 개 병렬 발사해서 <code>/api/query</code> (멀티) 와
+          <code>?mode=single</code> (전역 직렬화) 소요 시간을 비교한다.
         </p>
-        <div class="form-grid" style="margin-top:18px;">
-          <div class="field">
-            <label for="stress-concurrency">동시 요청 수</label>
-            <input id="stress-concurrency" type="number" min="1" value="32" disabled>
-          </div>
-          <div class="field">
-            <label for="stress-endpoint">엔드포인트</label>
-            <input id="stress-endpoint" type="text" value="/api/query?mode=single | /api/query" disabled>
-          </div>
+        <form id="stress-form" class="form-grid" style="margin-top:18px;">
           <div class="field field-span-2">
             <label for="stress-sql">비교 SQL</label>
-            <textarea id="stress-sql" disabled>SELECT * FROM users WHERE id = 1;</textarea>
+            <textarea id="stress-sql" spellcheck="false">SELECT * FROM users WHERE id = 1</textarea>
           </div>
+          <div class="field">
+            <label for="stress-concurrency">
+              동시 요청 수 &nbsp;<span id="stress-count-value">16</span>
+            </label>
+            <input id="stress-concurrency" type="range" min="1" max="64" value="16">
+          </div>
+          <div class="field">
+            <label>엔드포인트</label>
+            <span class="stress-endpoint-hint">
+              /api/query &nbsp;vs&nbsp; /api/query?mode=single
+            </span>
+          </div>
+        </form>
+        <div class="action-row" style="margin-top:18px;">
+          <button id="stress-run" class="action secondary" type="button">
+            싱글 vs 멀티 비교
+          </button>
+          <span id="stress-status" class="status-line">Ready</span>
         </div>
-        <div class="action-row">
-          <button class="action secondary" type="button" disabled>싱글 vs 멀티 비교</button>
-          <span class="status-line">
-            탭 `(a)` 구현이 들어오면 이 카드 레이아웃을 그대로 사용하면 된다.
-          </span>
-        </div>
+        <div id="stress-error" class="stress-error"></div>
       </article>
 
       <aside class="surface">
         <div class="surface-header">
           <div>
-            <div class="eyebrow">Merge Note</div>
-            <h2>탭 (a) 합류 포인트</h2>
+            <div class="eyebrow">Results</div>
+            <h2>실행 시간 (총 소요)</h2>
           </div>
         </div>
-        <div class="placeholder">
-          <p>권장 연결 지점</p>
-          <ul class="note-list">
-            <li>상단 카드: controls + run button</li>
-            <li>우측 카드: summary tiles + endpoint status</li>
-            <li>하단 카드: request table + compare summary</li>
-          </ul>
+        <div class="stress-metric">
+          <div class="stress-metric-head">
+            <span>Multi mode</span>
+            <small id="stress-multi-summary">0 ms</small>
+          </div>
+          <div class="stress-bar-track">
+            <div id="stress-multi-bar" class="stress-bar"></div>
+          </div>
         </div>
-        <p class="footnote">
-          이 스캐폴드는 탭 `(c)` 와 동일한 DOM 구조를 유지하도록 일부러 얇게 만들었다.
+        <div class="stress-metric">
+          <div class="stress-metric-head">
+            <span>Single mode</span>
+            <small id="stress-single-summary">0 ms</small>
+          </div>
+          <div class="stress-bar-track">
+            <div id="stress-single-bar" class="stress-bar stress-bar-single"></div>
+          </div>
+        </div>
+        <p class="footnote" style="margin-top:16px;">
+          ⚠ 브라우저의 per-origin 동시 연결 제한 (6) 때문에 서버 멀티 이득이
+          희석될 수 있음. 진짜 차이를 보려면 <code>xargs -P 8</code> 또는 REPL 사용.
         </p>
       </aside>
     </div>
@@ -1271,6 +1343,87 @@
     renderRequestTable([]);
     renderSparkline([]);
     renderTimeline([]);
+  })();
+
+  /* ── tab (a) Concurrent Stress — 용 형님 stress.html 에서 이식 ──── */
+  (function stressModule() {
+    const form = document.getElementById("stress-form");
+    const sqlInput = document.getElementById("stress-sql");
+    const countInput = document.getElementById("stress-concurrency");
+    const countValue = document.getElementById("stress-count-value");
+    const runButton = document.getElementById("stress-run");
+    const statusEl = document.getElementById("stress-status");
+    const errorEl = document.getElementById("stress-error");
+    const multiSummary = document.getElementById("stress-multi-summary");
+    const singleSummary = document.getElementById("stress-single-summary");
+    const multiBar = document.getElementById("stress-multi-bar");
+    const singleBar = document.getElementById("stress-single-bar");
+
+    if (!form || !runButton) return;
+
+    countInput.addEventListener("input", function () {
+      countValue.textContent = countInput.value;
+    });
+
+    async function postSql(path, sql) {
+      const response = await fetch(path, {
+        method: "POST",
+        headers: { "Content-Type": "text/plain" },
+        body: sql
+      });
+      await response.text();
+      return { ok: response.ok };
+    }
+
+    async function runBatch(path, sql, count) {
+      const started = performance.now();
+      const jobs = Array.from({ length: count }, function () {
+        return postSql(path, sql);
+      });
+      const settled = await Promise.allSettled(jobs);
+      const elapsed = performance.now() - started;
+      const okCount = settled.filter(function (item) {
+        return item.status === "fulfilled" && item.value.ok;
+      }).length;
+      return { elapsed: elapsed, okCount: okCount };
+    }
+
+    function renderResult(barEl, summaryEl, result, maxMs, count) {
+      const elapsed = Math.round(result.elapsed);
+      const widthPct = maxMs > 0
+        ? Math.max(4, Math.round((elapsed / maxMs) * 100))
+        : 0;
+      summaryEl.textContent = elapsed + " ms, " + result.okCount + "/" + count + " ok";
+      barEl.style.width = Math.min(widthPct, 100) + "%";
+    }
+
+    runButton.addEventListener("click", async function () {
+      const sql = sqlInput.value.trim();
+      const count = Number(countInput.value);
+
+      if (!sql) {
+        errorEl.textContent = "SQL 이 비어있음.";
+        return;
+      }
+
+      errorEl.textContent = "";
+      runButton.disabled = true;
+      statusEl.textContent = "Running…";
+
+      try {
+        const multi = await runBatch("/api/query", sql, count);
+        const single = await runBatch("/api/query?mode=single", sql, count);
+        const maxMs = Math.max(multi.elapsed, single.elapsed);
+        renderResult(multiBar, multiSummary, multi, maxMs, count);
+        renderResult(singleBar, singleSummary, single, maxMs, count);
+        statusEl.textContent = "Complete";
+      } catch (err) {
+        errorEl.textContent = (err && err.message) ? err.message : "Request failed.";
+        statusEl.textContent = "Failed";
+      } finally {
+        runButton.disabled = false;
+      }
+    });
   })();
 </script>
 </body>
