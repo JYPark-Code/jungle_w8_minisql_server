@@ -897,7 +897,10 @@
       return;
     }
     setStressBusy(true, "multi-thread 중 (" + n + " parallel)…");
-    const path = "/api/dict?english=" + encodeURIComponent(word);
+    /* stress test 는 캐시 히트의 편향을 배제하기 위해 nocache=1 고정.
+     * 동일 단어를 N 번 부르므로 캐시가 있으면 첫 요청 외에는 전부 hit 경로라
+     * 서버의 실제 병렬 처리 특성이 안 드러남. */
+    const path = "/api/dict?english=" + encodeURIComponent(word) + "&nocache=1";
     const startedAt = performance.now();
     const jobs = [];
     for (let i = 0; i < n; i++) jobs.push(tracedFetch("GET", path));
@@ -916,7 +919,8 @@
       return;
     }
     setStressBusy(true, "single-thread 중 (" + n + " sequential)…");
-    const path = "/api/dict?english=" + encodeURIComponent(word);
+    /* multi 와 동일하게 캐시 우회 — 비교 공정성 유지. */
+    const path = "/api/dict?english=" + encodeURIComponent(word) + "&nocache=1";
     const startedAt = performance.now();
     for (let i = 0; i < n; i++) {
       await tracedFetch("GET", path);
