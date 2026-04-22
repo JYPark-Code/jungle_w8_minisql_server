@@ -1,0 +1,79 @@
+name: ci
+
+on:
+  push:
+    branches: [main, dev]
+  pull_request:
+    branches: [main, dev]
+
+jobs:
+  # ---------------------------------------------------------------------------
+  # build — 경고 0 으로 데몬 바이너리 생성
+  # ---------------------------------------------------------------------------
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install toolchain
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y build-essential
+
+      - name: Toolchain versions
+        run: |
+          gcc --version | head -1
+          make --version | head -1
+
+      - name: Build minisqld (warnings as errors)
+        run: make CFLAGS="-Wall -Wextra -Wpedantic -Werror -std=c11 -O2 -g -I./include -I./src"
+
+      - name: Verify binary
+        run: test -x ./minisqld && ./minisqld --version
+
+  # ---------------------------------------------------------------------------
+  # test — W7 회귀 227 + 본인 파트 단위 테스트
+  # ---------------------------------------------------------------------------
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install toolchain
+        run: sudo apt-get update -qq && sudo apt-get install -y build-essential
+
+      - name: Run tests
+        run: make test
+
+  # ---------------------------------------------------------------------------
+  # tsan — ThreadSanitizer 빌드 (동시성 코드 검증)
+  #   · MP0 시점에는 빌드 성공까지만 검증. 동시성 테스트 바이너리는
+  #     승진/동현 PR 머지 이후 이 잡에서 실행
+  # ---------------------------------------------------------------------------
+  tsan:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install toolchain
+        run: sudo apt-get update -qq && sudo apt-get install -y build-essential
+
+      - name: Build with ThreadSanitizer
+        run: make tsan
+
+      - name: Verify TSan binary
+        run: test -x ./minisqld_tsan
+
+  # ---------------------------------------------------------------------------
+  # valgrind — 메모리 누수 0 보장 (W7 회귀 테스트 대상)
+  # ---------------------------------------------------------------------------
+  valgrind:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install toolchain
+        run: sudo apt-get update -qq && sudo apt-get install -y build-essential valgrind
+
+      - name: Valgrind regression
+        run: make valgrind
