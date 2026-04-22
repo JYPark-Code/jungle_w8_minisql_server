@@ -127,6 +127,17 @@ int engine_init(const char *data_dir) {
 
     if (dictionary_schema_exists()) {
         (void)dictionary_trie_rebuild_locked();
+    } else {
+        /* dictionary 테이블이 없으면 빈 스키마로 자동 생성.
+         * 이유: engine_is_ready() 가 s_dictionary_trie_ready 를 요구하므로,
+         * 테이블이 없으면 /api/admin/insert 까지 503 warming_up 에 갇혀
+         * chicken-and-egg (insert 로 테이블을 만들 수도 없음) 가 됨.
+         * CREATE 성공 시 dictionary_trie_refresh_after_write 가 내부적으로
+         * trie_rebuild 를 호출해 s_dictionary_trie_ready 를 true 로 올림. */
+        engine_result_t bootstrap = engine_exec_sql(
+            "CREATE TABLE dictionary (id INT, english VARCHAR, korean VARCHAR);",
+            false);
+        engine_result_free(&bootstrap);
     }
 
     atomic_store_explicit(&s_engine_ready, true, memory_order_release);
