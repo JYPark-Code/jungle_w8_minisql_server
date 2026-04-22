@@ -3,10 +3,11 @@
 # 타겟:
 #   make            ./minisqld 데몬 빌드
 #   make test       W7 회귀 (parser/executor/storage/bptree/index_registry)
-#                   + W8 단위 테스트 (존재하면)
+#                   + W8 단위 테스트 (engine_lock 등)
 #   make tsan       ThreadSanitizer 빌드 (./minisqld_tsan)
-#   make valgrind   W7 테스트 바이너리들을 valgrind 로 회귀
+#   make valgrind   W7/W8 테스트 바이너리들을 valgrind 로 회귀
 #   make bench      B+Tree pure 벤치 (W7 자산)
+#   make repl       ./minisqld-repl ANSI REPL 클라이언트 (발표 백업 시연용)
 #   make loadtest   (추후) 동시 N 요청 부하 테스트 — 현재는 no-op placeholder
 #   make clean      빌드 산출물 + data/ 테스트 잔여물 제거
 # =============================================================================
@@ -21,9 +22,10 @@ LDFLAGS_TSAN= -pthread -fsanitize=thread
 
 CFLAGS      = $(CFLAGS_BASE) $(CFLAGS_REL)
 
-SRC_DIR   = src
-TEST_DIR  = tests
-BENCH_DIR = bench
+SRC_DIR    = src
+TEST_DIR   = tests
+BENCH_DIR  = bench
+CLIENT_DIR = client
 
 # ---------------------------------------------------------------------------
 # 소스 그룹
@@ -72,12 +74,15 @@ TEST_PARSER_EXEC      = test_parser_executor
 BENCH_TARGET = benchmark
 BENCH_SRCS   = $(BENCH_DIR)/benchmark.c $(W7_SRCS)
 
+REPL_TARGET = minisqld-repl
+REPL_SRCS   = $(CLIENT_DIR)/repl.c
+
 # ---------------------------------------------------------------------------
 # .PHONY
 # ---------------------------------------------------------------------------
-.PHONY: all clean test tsan valgrind bench loadtest \
+.PHONY: all clean test tsan valgrind bench loadtest repl \
         test_storage_all \
-        test_bptree test_benchmark test_index_registry test_threadpool
+        test_bptree test_benchmark test_index_registry test_engine_lock test_threadpool
 
 # ---------------------------------------------------------------------------
 # 기본 빌드 — 데몬
@@ -100,7 +105,7 @@ $(DAEMON_TSAN): $(DAEMON_SRCS)
 # ---------------------------------------------------------------------------
 # 회귀 테스트 (W7 + 추후 W8)
 # ---------------------------------------------------------------------------
-test: $(TEST_PARSER_EXEC) test_storage_all test_bptree test_benchmark test_index_registry test_threadpool
+test: $(TEST_PARSER_EXEC) test_storage_all test_bptree test_benchmark test_index_registry test_engine_lock test_threadpool
 	./$(TEST_PARSER_EXEC)
 
 $(TEST_PARSER_EXEC): $(TEST_PARSER_EXEC_SRCS)
@@ -136,6 +141,10 @@ test_index_registry: $(TEST_DIR)/test_index_registry.c $(REGISTRY_TEST_DEPS)
 	$(CC) $(CFLAGS) -o $@ $^ $(LDFLAGS)
 	./$@
 
+test_engine_lock: $(TEST_DIR)/test_engine_lock.c $(SRC_DIR)/engine_lock.c
+	$(CC) $(CFLAGS) -o $@ $^ $(LDFLAGS)
+	./$@
+
 test_threadpool: $(TEST_DIR)/test_threadpool.c $(THREADPOOL_TEST_DEPS)
 	$(CC) $(CFLAGS) -o $@ $^ $(LDFLAGS)
 	./$@
@@ -143,13 +152,15 @@ test_threadpool: $(TEST_DIR)/test_threadpool.c $(THREADPOOL_TEST_DEPS)
 # ---------------------------------------------------------------------------
 # valgrind — W7 테스트 바이너리 회귀 (데몬은 상주형이라 미포함)
 # ---------------------------------------------------------------------------
-valgrind: $(TEST_PARSER_EXEC) $(STORAGE_TEST_TARGETS) test_bptree test_benchmark test_index_registry test_threadpool
+valgrind: $(TEST_PARSER_EXEC) $(STORAGE_TEST_TARGETS) test_bptree test_benchmark test_index_registry test_engine_lock test_threadpool
 	@echo "=== valgrind: parser/executor ==="
 	valgrind --leak-check=full --error-exitcode=1 --quiet ./$(TEST_PARSER_EXEC)
 	@echo "=== valgrind: storage_insert ==="
 	valgrind --leak-check=full --error-exitcode=1 --quiet ./test_storage_insert
 	@echo "=== valgrind: bptree ==="
 	valgrind --leak-check=full --error-exitcode=1 --quiet ./test_bptree
+	@echo "=== valgrind: engine_lock ==="
+	valgrind --leak-check=full --error-exitcode=1 --quiet ./test_engine_lock
 	@echo "=== valgrind: threadpool ==="
 	valgrind --leak-check=full --error-exitcode=1 --quiet ./test_threadpool
 
@@ -161,6 +172,15 @@ bench: $(BENCH_TARGET)
 
 $(BENCH_TARGET): $(BENCH_SRCS)
 	$(CC) $(CFLAGS) -o $@ $^ $(LDFLAGS)
+
+# ---------------------------------------------------------------------------
+# REPL — ANSI CLI 클라이언트 (HTTP SQL, 발표 백업 시연용)
+#   MP0 시점엔 빌드만 검증. 정식 연결은 용 형님 server.c 머지 이후.
+# ---------------------------------------------------------------------------
+repl: $(REPL_TARGET)
+
+$(REPL_TARGET): $(REPL_SRCS)
+	$(CC) $(CFLAGS) -o $@ $^
 
 # ---------------------------------------------------------------------------
 # loadtest — 추후 구현 placeholder
@@ -175,7 +195,7 @@ loadtest:
 clean:
 	rm -f $(DAEMON) $(DAEMON_TSAN) \
 	      $(TEST_PARSER_EXEC) $(STORAGE_TEST_TARGETS) \
-	      test_bptree test_benchmark test_index_registry test_threadpool \
-	      $(BENCH_TARGET) tree_shape
+	      test_bptree test_benchmark test_index_registry test_engine_lock test_threadpool \
+	      $(BENCH_TARGET) tree_shape $(REPL_TARGET)
 	rm -rf data/*.csv data/*.schema
 	rm -rf data/schema data/tables

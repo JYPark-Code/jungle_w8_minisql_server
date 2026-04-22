@@ -6,6 +6,7 @@ build/
 sqlparser
 minisqld
 minisqld_tsan
+minisqld-repl
 test_runner
 test_parser_executor
 test_storage_insert
