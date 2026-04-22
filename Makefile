@@ -48,7 +48,8 @@ W8_SRCS  = $(SRC_DIR)/main.c \
            $(SRC_DIR)/dict_cache.c \
            $(SRC_DIR)/engine.c \
            $(SRC_DIR)/engine_lock.c \
-           $(SRC_DIR)/threadpool.c
+           $(SRC_DIR)/threadpool.c \
+           $(SRC_DIR)/trie.c
 
 DAEMON_SRCS = $(W8_SRCS) $(W7_SRCS)
 DAEMON      = minisqld
@@ -63,6 +64,7 @@ BPTREE_TEST_DEPS     = $(SRC_DIR)/bptree.c
 BENCH_TEST_DEPS      = $(SRC_DIR)/bptree.c
 REGISTRY_TEST_DEPS   = $(SRC_DIR)/index_registry.c $(SRC_DIR)/bptree.c
 THREADPOOL_TEST_DEPS = $(SRC_DIR)/threadpool.c
+TRIE_TEST_DEPS       = $(SRC_DIR)/trie.c $(SRC_DIR)/engine.c $(SRC_DIR)/engine_lock.c $(W7_SRCS)
 
 STORAGE_TEST_TARGETS = test_storage_insert test_storage_delete \
                        test_storage_update test_storage_select_result
@@ -83,7 +85,7 @@ REPL_SRCS   = $(CLIENT_DIR)/repl.c
 # ---------------------------------------------------------------------------
 .PHONY: all clean test tsan valgrind bench loadtest repl \
         test_storage_all \
-        test_bptree test_benchmark test_index_registry test_engine_lock test_threadpool test_dict_cache
+        test_bptree test_benchmark test_index_registry test_engine_lock test_threadpool test_trie test_dict_cache
 
 # ---------------------------------------------------------------------------
 # 기본 빌드 — 데몬
@@ -106,7 +108,7 @@ $(DAEMON_TSAN): $(DAEMON_SRCS)
 # ---------------------------------------------------------------------------
 # 회귀 테스트 (W7 + 추후 W8)
 # ---------------------------------------------------------------------------
-test: $(TEST_PARSER_EXEC) test_storage_all test_bptree test_benchmark test_index_registry test_engine_lock test_threadpool test_dict_cache
+test: $(TEST_PARSER_EXEC) test_storage_all test_bptree test_benchmark test_index_registry test_engine_lock test_threadpool test_trie test_dict_cache
 	./$(TEST_PARSER_EXEC)
 
 $(TEST_PARSER_EXEC): $(TEST_PARSER_EXEC_SRCS)
@@ -150,6 +152,10 @@ test_threadpool: $(TEST_DIR)/test_threadpool.c $(THREADPOOL_TEST_DEPS)
 	$(CC) $(CFLAGS) -o $@ $^ $(LDFLAGS)
 	./$@
 
+test_trie: $(TEST_DIR)/test_trie.c $(TRIE_TEST_DEPS)
+	$(CC) $(CFLAGS) -o $@ $^ $(LDFLAGS)
+	./$@
+
 test_dict_cache: $(TEST_DIR)/test_dict_cache.c $(SRC_DIR)/dict_cache.c
 	$(CC) $(CFLAGS) -o $@ $^ $(LDFLAGS)
 	./$@
@@ -157,7 +163,7 @@ test_dict_cache: $(TEST_DIR)/test_dict_cache.c $(SRC_DIR)/dict_cache.c
 # ---------------------------------------------------------------------------
 # valgrind — W7 테스트 바이너리 회귀 (데몬은 상주형이라 미포함)
 # ---------------------------------------------------------------------------
-valgrind: $(TEST_PARSER_EXEC) $(STORAGE_TEST_TARGETS) test_bptree test_benchmark test_index_registry test_engine_lock test_threadpool test_dict_cache
+valgrind: $(TEST_PARSER_EXEC) $(STORAGE_TEST_TARGETS) test_bptree test_benchmark test_index_registry test_engine_lock test_threadpool test_trie test_dict_cache
 	@echo "=== valgrind: parser/executor ==="
 	valgrind --leak-check=full --error-exitcode=1 --quiet ./$(TEST_PARSER_EXEC)
 	@echo "=== valgrind: storage_insert ==="
@@ -168,6 +174,8 @@ valgrind: $(TEST_PARSER_EXEC) $(STORAGE_TEST_TARGETS) test_bptree test_benchmark
 	valgrind --leak-check=full --error-exitcode=1 --quiet ./test_engine_lock
 	@echo "=== valgrind: threadpool ==="
 	valgrind --leak-check=full --error-exitcode=1 --quiet ./test_threadpool
+	@echo "=== valgrind: trie ==="
+	valgrind --leak-check=full --error-exitcode=1 --quiet ./test_trie
 	@echo "=== valgrind: dict_cache ==="
 	valgrind --leak-check=full --error-exitcode=1 --quiet ./test_dict_cache
 
@@ -202,7 +210,7 @@ loadtest:
 clean:
 	rm -f $(DAEMON) $(DAEMON_TSAN) \
 	      $(TEST_PARSER_EXEC) $(STORAGE_TEST_TARGETS) \
-	      test_bptree test_benchmark test_index_registry test_engine_lock test_threadpool test_dict_cache \
+	      test_bptree test_benchmark test_index_registry test_engine_lock test_threadpool test_trie test_dict_cache \
 	      $(BENCH_TARGET) tree_shape $(REPL_TARGET)
 	rm -rf data/*.csv data/*.schema
 	rm -rf data/schema data/tables
