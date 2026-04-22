@@ -56,6 +56,11 @@ typedef struct {
 static atomic_uint_fast64_t s_total_queries;
 static trie_t *s_dictionary_trie;
 static atomic_bool s_dictionary_trie_ready;
+/* ROUND2-WARMUP: engine_init 완료 ~ engine_shutdown 사이 true.
+ * dictionary trie 의 실제 rebuild 상태 (s_dictionary_trie_ready) 와는 독립.
+ * Router 의 사전 전용 엔드포인트 (/api/dict, /api/autocomplete, /api/admin/
+ * insert) 가 engine 이 시작되기 전의 요청을 503 으로 fast-fail 하는 용도. */
+static atomic_bool s_engine_ready;
 
 enum {
     DICTIONARY_TRIE_MAX_ROWS = 4096
@@ -107,6 +112,7 @@ int engine_init(const char *data_dir) {
     (void)data_dir;
     atomic_store_explicit(&s_total_queries, 0, memory_order_relaxed);
     atomic_store_explicit(&s_dictionary_trie_ready, false, memory_order_release);
+    atomic_store_explicit(&s_engine_ready, false, memory_order_release);
     s_dictionary_trie = NULL;
 
     if (engine_lock_init() != 0) {
@@ -123,6 +129,7 @@ int engine_init(const char *data_dir) {
         (void)dictionary_trie_rebuild_locked();
     }
 
+    atomic_store_explicit(&s_engine_ready, true, memory_order_release);
     return 0;
 }
 
@@ -327,6 +334,7 @@ void engine_get_stats(uint64_t *total_queries, uint64_t *lock_wait_ns_total) {
 }
 
 void engine_shutdown(void) {
+    atomic_store_explicit(&s_engine_ready, false, memory_order_release);
     dictionary_trie_replace(NULL, 0);
     storage_reset_internal_caches();
     index_registry_destroy_all();
@@ -337,6 +345,16 @@ void engine_result_free(engine_result_t *r) {
     if (!r) return;
     free(r->json);
     r->json = NULL;
+}
+
+bool engine_is_ready(void) {
+    /* engine_init 자체 완료 && dictionary trie 실데이터 준비 상태 모두 true.
+     * engine_init 안 됐거나, dictionary 테이블이 아직 없거나 rebuild 중이면 false.
+     * Router 는 이 값이 false 일 때 /api/dict, /api/autocomplete, /api/admin/insert
+     * 의 engine_exec_sql 직전 체크에서 503 warming_up 반환. 각 handler 의
+     * format 검증 (405/400) 은 gate 이전이라 영향 없음. */
+    return atomic_load_explicit(&s_engine_ready, memory_order_acquire)
+        && atomic_load_explicit(&s_dictionary_trie_ready, memory_order_acquire);
 }
 
 static uint64_t now_ns(void)

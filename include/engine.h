@@ -57,4 +57,13 @@ void engine_shutdown(void);
 /* engine_result_t 내부의 json 버퍼 해제. r 자체는 stack/heap 무관. */
 void engine_result_free(engine_result_t *r);
 
+/* dictionary 관련 인덱스 (trie) 가 준비됐는지 여부.
+ *   - engine_init 후 dictionary 테이블이 존재하면 trie 를 rebuild 한 뒤 true
+ *   - 테이블이 없거나 rebuild 실패한 경우 false
+ *   - write 경로 중 잠시 rebuild 동안 false 가 될 수 있음
+ * router 가 /api/dict, /api/autocomplete, /api/admin/insert 같은 사전 전용
+ * 엔드포인트 진입 시 이 값을 체크해서 false 면 503 warming_up 으로 응답.
+ * Atomic load (락 없음). 스레드 안전. */
+bool engine_is_ready(void);
+
 #endif /* ENGINE_H */

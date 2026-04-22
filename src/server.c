@@ -137,7 +137,9 @@ int server_run(const server_config_t *cfg) {
     }
 
     close(listen_fd);
-    threadpool_shutdown(pool);
+    if (threadpool_shutdown_graceful(pool, 5000) != 0) {
+        fprintf(stderr, "[server] threadpool drain timed out\n");
+    }
     engine_shutdown();
     return 0;
 }
