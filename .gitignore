@@ -20,3 +20,8 @@ data/
 CLAUDE_jiyong.md
 test_index_registry
 tree_shape
+test_engine_lock
+test_threadpool
+test_trie
+test_dict_cache
+test_router
