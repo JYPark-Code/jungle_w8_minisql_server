@@ -5,8 +5,13 @@
  * 역할:
  *   - parsed HTTP request 를 받아 적절한 handler 로 분기
  *   - 내부 라우트:
+ *       GET  /api/dict      → dictionary exact lookup + cache
+ *       GET  /api/autocomplete
+ *                           → Trie prefix 기반 english 자동완성
+ *       POST /api/admin/insert
+ *                           → dictionary insert + exact lookup cache invalidation
  *       POST /api/query     → engine_exec_sql
- *       POST /api/inject    → 더미 데이터 주입
+ *       POST /api/inject    → 담당 범위 밖이므로 501 JSON 응답
  *       GET  /api/stats     → stats JSON
  *       GET  /api/explain   → engine_explain
  *       GET  /(...)          → 정적 파일 서빙 (--web-root 하위)
