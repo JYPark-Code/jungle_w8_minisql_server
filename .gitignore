@@ -4,7 +4,10 @@ build/
 *.exe
 *.out
 sqlparser
+minisqld
+minisqld_tsan
 test_runner
+test_parser_executor
 test_storage_insert
 test_storage_delete
 test_storage_update

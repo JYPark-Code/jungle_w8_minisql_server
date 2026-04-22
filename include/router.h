@@ -9,7 +9,7 @@
  *       POST /api/inject    → 더미 데이터 주입
  *       GET  /api/stats     → stats JSON
  *       GET  /api/explain   → engine_explain
- *       GET  /*             → 정적 파일 서빙 (--web-root 하위)
+ *       GET  /(...)          → 정적 파일 서빙 (--web-root 하위)
  *   - 매칭 실패 시 resp->status = 404 로 채움
  *
  * 메모리 계약:

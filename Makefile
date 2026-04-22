@@ -13,7 +13,7 @@
 
 CC          = gcc
 CSTD        = -std=c11
-CFLAGS_BASE = -Wall -Wextra -Wpedantic $(CSTD) -I./include -I./src
+CFLAGS_BASE = -Wall -Wextra -Wpedantic $(CSTD) -D_POSIX_C_SOURCE=200809L -I./include -I./src
 CFLAGS_REL  = -O2 -g
 CFLAGS_TSAN = -O1 -g -fsanitize=thread
 LDFLAGS     = -pthread
