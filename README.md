@@ -1,277 +1,320 @@
 # minisqld — Multi-threaded Mini DBMS in Pure C
 
-> **Week 8.** W7 B+Tree Index DB 엔진 위에 **단일 C 데몬**으로 동작하는
-> 멀티스레드 HTTP API 서버를 얹어, 외부 클라이언트가 SQL 을 실행할 수 있는
-> 미니 DBMS 를 완성한다.
+> A single-process HTTP DBMS daemon written in C11 with **zero external
+> runtime dependencies** (only `pthread`). Built on top of a W7 B+Tree
+> index engine, exposed over an HTTP/1.1 API server implemented from
+> scratch.
 
-**핵심 차별점 (목표)**
-- 순수 C11, 외부 의존 0 (HTTP/JSON 라이브러리 없이 직접 구현, pthread 만 허용)
-- Thread pool + blocking job queue 로 동시 요청 처리
-- 테이블 단위 `pthread_rwlock_t` 으로 SELECT 는 공유, DML 은 직렬화
-- 단일 프로세스 상주 → W7 의 "subprocess 당 rebuild 고정비" 제거
-- `?mode=single` 토글로 전역 직렬화 baseline 과 비교 가능
+The project is a learning exercise run as a one-day hackathon, extended
+over two refactoring rounds. Round 1 put the engine behind an HTTP server
+with a fixed thread pool and per-table RW locks. Round 2 adds a
+self-tuning thread pool, a result cache, and a trie-based prefix index
+for autocomplete.
 
 ---
 
-## 현재 개발 상태
+## Project Status
 
-**Round 4 (W8) — 1차 mix-merge 완료, 시연 회의 + 2차 리팩토링 대기.**
+**Round 2 refactoring — in progress.** Round 1 has been merged to `dev`
+(4 feature PRs integrated). Round 2 feature work is being implemented on
+per-owner branches; the scope is frozen and listed under
+[Team](#team).
 
-| MP | 내용 | 상태 |
+| Round | Scope | Status |
 |---|---|---|
-| MP0 | PM 선작업 — 인터페이스 헤더 5종, engine_lock, Makefile, CI 4잡, stub | ✅ 완료 |
-| MP1~MP3 | 팀원 각자 구현 + 단위 테스트 | ✅ 완료 |
-| MP4 | 1차 PR 4 종 제출 + PM 1차 mix-merge (dev) | ✅ 완료 |
-| MP5a | 시연 회의 + 2차 리팩토링 (탭 UI 통합 / 더미 주입 / stats 보강) | ⏳ 진행 |
-| MP5b | TSan 통합 회귀 + loadtest 스크립트 | ⏳ |
-| MP6 | README 실측 수치 확정 + 발표 리허설 + `dev → main` | ⏳ |
-
-**지금 실제로 동작하는 것 (dev 기준)**
-- `make` — `./minisqld` 전체 링크 성공
-- `./minisqld --port 8080 --workers 8 --data-dir ./data --web-root ./web` 으로 기동,
-  HTTP/1.1 API 서버 + 정적 파일 서빙 정상
-- `/api/query` / `/api/query?mode=single` / `/api/explain` / `/api/stats` 동작
-- `/` → `web/concurrency.html` (탭 구조 + 탭 (c) RW Contention 폴링)
-- `/stress.html` → Concurrent Stress 실동작 (multi vs single 비교 UI)
-- `make test` — W7 회귀 227 + `test_engine_lock` 8 + `test_threadpool` + `test_engine_concurrent` + `test_protocol` 통과
-- `make tsan` — `./minisqld_tsan` 빌드
-- `make valgrind` — W7 + W8 테스트 누수 0
-- `make repl` — `./minisqld-repl` ANSI CLI (발표 백업 시연용)
-- CI 4 개 잡 (build / test / tsan / valgrind) dev 에서 전부 green
-
-**2차 리팩토링에서 정리할 것**
-- `web/concurrency.html` 탭 (a) 스캐폴드에 `stress.html` 의 `runBatch` JS 이식 → 한 페이지로 통합
-- `/api/inject` 501 → 실구현 (더미 10 만 행 주입)
-- `stats.c` 분리 + `qps_last_sec` sliding window 추가
-- stress 데모 측정 지표 (평균 latency / QPS) 추가 — 브라우저 제약 §아래 참조
-- CI `toolchain install` 단계 스피드업 (`chore/ci-speedup`)
+| Round 1 (MP0~MP4) | Daemon skeleton, HTTP/1.1 server, fixed thread pool, per-table RW locks, stub-driven mix-merge | ✅ merged to `dev` |
+| Round 2 | Dynamic thread pool, LRU cache, Trie prefix search, redesigned UI | ⏳ in progress |
+| Final | Integration, benchmarks, README numbers, `dev → main` | ⏳ pending |
 
 ---
 
-## 빠른 시작 (현재 상태 기준)
+## Features
+
+**Round 1 (merged):**
+- Pure C11 — no HTTP / JSON libraries. `pthread` is the only runtime
+  dependency.
+- HTTP/1.1 server implemented from scratch (`src/server.c`,
+  `src/protocol.c`, `src/router.c`). Static-file serving included.
+- Fixed worker thread pool with blocking job queue
+  (`src/threadpool.c`).
+- Per-table reader/writer locks + global catalog lock
+  (`src/engine_lock.c`). Reads (SELECT) run concurrently; writes
+  (INSERT/UPDATE/DELETE) serialize per table.
+- `?mode=single` toggle for a global-mutex baseline, useful for A/B
+  comparison against the multi-worker path.
+- W7 B+Tree index (`src/bptree.c`, `src/index_registry.c`) reused
+  in-process — no per-request subprocess spawn.
+- ANSI REPL client (`client/repl.c`) for terminal-based use and demo
+  backup.
+
+**Round 2 (in progress):**
+- **Dynamic thread pool.** Starts at 4 workers, scales up by +4 when
+  utilization reaches 80%, capped at 16. Shrink policy is deliberately
+  left unimplemented in this round (see
+  [Known issues](#known-issues--future-work)).
+- **LRU result cache with reader/writer lock.** Concurrent readers share
+  the cache; writers (INSERT) invalidate affected keys.
+- **Trie-based prefix search.** Enables autocomplete queries in
+  `O(k)` over the input prefix length, in addition to the existing
+  B+Tree point/range lookups.
+- **Redesigned frontend.** Minimal Apple/Toss-inspired UI replacing the
+  dark-theme stress page used during Round 1.
+
+---
+
+## Architecture
+
+```
+┌─────────────┐
+│ Client (FE) │  Apple/Toss-inspired UI
+└──────┬──────┘
+       │ HTTP/1.1 (TCP, Connection: close)
+       ▼
+┌──────────────────────────────────────┐
+│ Thread Pool (dynamic, 4 → 16)        │
+│  trigger: utilization >= 80%, +4     │
+└──────┬───────────────────────────────┘
+       ▼
+┌───────────────────────────────┐
+│ Query Parser → Planner        │
+└──────┬────────────────────────┘
+       ▼
+┌───────────────────────────────┐       ┌─────────────────────────┐
+│ Cache Layer  (LRU + RWLock)   │◀──────│ invalidate on INSERT    │
+└──────┬────────────────────────┘       └──────────┬──────────────┘
+       │ miss                                      │
+       ▼                                           │
+┌───────────────────────────────┐                  │
+│ Trie Index  +  B+Tree Storage │──────────────────┘
+└───────────────────────────────┘
+```
+
+| Layer | File | Concurrency |
+|---|---|---|
+| Socket | `src/server.c` | `accept()` on main thread; `fd` handed to pool |
+| Thread pool | `src/threadpool.c` | mutex + condvar queue; dynamic resize (R2) |
+| HTTP | `src/protocol.c`, `src/router.c` | stateless per worker |
+| Cache | `src/cache.c` (R2) | LRU, reader/writer lock |
+| Engine | `src/engine.c`, `src/engine_lock.c` | per-table RW lock + catalog lock + single-mode mutex |
+| Index | `src/bptree.c`, `src/trie.c` (R2) | read-side locked via engine layer |
+| Storage | `src/storage.c` (W7) | engine layer serializes writes |
+
+Diagram mirrors `CLAUDE.md § Architecture`. The module-boundary contracts
+for Round 2 are defined in `CLAUDE.md § 모듈 간 인터페이스` and are still
+flagged `TBD` until the four teams confirm signatures.
+
+---
+
+## Demo Scenario
+
+**Use case: a language-dictionary service.** Chosen because it exercises
+all three Round 2 features on the same data set:
+
+1. **Concurrent reads (SELECT).** Many users simultaneously look up
+   definitions by word ID or exact spelling. Exercises per-table
+   read-lock sharing and cache hits.
+2. **Operator insert (INSERT).** An admin adds a new word. Exercises
+   per-table write-lock serialization and cache invalidation of stale
+   prefix / exact-match results.
+3. **Real-time autocomplete.** As the user types, the UI hits a
+   prefix-search endpoint. Exercises the trie index and concurrent read
+   throughput.
+
+The demo page (`web/concurrency.html`) drives these three flows and
+surfaces the metrics that come out of `GET /api/stats` — active workers,
+queue depth, and accumulated lock wait.
+
+Caveat: browsers cap per-origin HTTP/1.1 connections at 6. The built-in
+stress tab cannot fully express the server's multi-worker throughput on
+its own. Use `xargs -P` or the REPL for the real number — see
+[Benchmark](#benchmark).
+
+---
+
+## Quick Start
 
 ```bash
 git clone https://github.com/JYPark-Code/jungle_w8_minisql_server.git
 cd jungle_w8_minisql_server
 
-# 빌드 + 회귀
-make                        # ./minisqld + stub 링크 통과
-make test                   # W7 227개 + engine_lock 8개 통과
+# Build (no extra dependencies beyond a C11 toolchain and pthread)
+make
 
-# 데몬 기동 (MP0 시점엔 accept loop 가 stub 이라 즉시 종료)
-./minisqld --version
-./minisqld --help
-
-# REPL 클라이언트 빌드 (서버 구현 후 실제 연결)
-make repl
-./minisqld-repl --help
+# Create a data directory and launch the daemon
+mkdir -p data
+./minisqld --port 8080 --workers 8 --data-dir ./data --web-root ./web
 ```
 
-**MP4~5 이후 예상 사용 흐름 (현재는 동작 X):**
+Once stderr reports `[server] listening on port 8080`, open a browser at
+<http://localhost:8080/> or hit the API directly:
+
 ```bash
-./minisqld --port 8080 --workers 8 --data-dir ./data --web-root ./web &
 curl -X POST http://localhost:8080/api/query \
      -H "Content-Type: text/plain" \
      -d "SELECT * FROM users WHERE id = 1"
-# 또는
-./minisqld-repl --port 8080
-# 또는 브라우저로 http://localhost:8080 → 동시성 데모
 ```
 
----
+### Requirements
+- GCC 9+ (or Clang with equivalent C11 support)
+- GNU Make
+- `pthread` (part of glibc on Linux)
+- `valgrind` (optional, for `make valgrind`)
 
-## 아키텍처
+No additional libraries, language runtimes, or package managers are
+involved at build time or runtime. The daemon produces a single
+statically-linkable binary.
 
-```
-[Client / Browser]
-         │ HTTP/1.1
-         ▼
-[server.c]       accept loop
-         │  enqueue(fd)
-         ▼
-[threadpool.c]   N workers (mutex + condvar blocking queue)
-         │
-         ▼
-[protocol.c] HTTP parse → [router.c] method+path dispatch
-         │
-         ▼
-[engine.c]       engine_lock 경유: 테이블 RW lock / catalog lock / single mutex
-         │
-         ▼
-[parser / executor / storage / bptree]   (W7 엔진 자산, in-process 재사용)
-```
+### CLI Options
 
-| 레이어 | 파일 | 동시성 전략 |
+| Option | Default | Description |
 |---|---|---|
-| Socket | `src/server.c` | accept 는 메인 스레드, fd 를 job queue 로 전달 |
-| Thread pool | `src/threadpool.c` | mutex + condvar 기반 blocking queue |
-| HTTP | `src/protocol.c` + `src/router.c` | stateless (worker 당 요청 독립) |
-| Engine | `src/engine.c` + `src/engine_lock.c` | 테이블 RW lock + 글로벌 catalog lock + single-mode mutex |
-| Storage | `src/storage.c` (W7) | engine 레이어가 락으로 보호 |
-
-자세한 다이어그램: [`docs/architecture.svg`](docs/architecture.svg) (MP5 에서 갱신 예정)
-
----
-
-## API 설계
-
-| Method | Path | 설명 | 상태 |
-|---|---|---|---|
-| POST | `/api/query` | SQL 실행, body 는 raw SQL (text/plain) | 🚧 stub |
-| POST | `/api/query?mode=single` | 전역 mutex 로 강제 직렬화 (비교 baseline) | 🚧 stub |
-| POST | `/api/inject` | 더미 데이터 주입 | 🚧 stub |
-| GET | `/api/stats` | active workers, qps, lock wait 통계 | 🚧 stub |
-| GET | `/api/explain?sql=...` | 인덱스 사용 여부, 노드 visit 수 | 🚧 stub |
-| GET | `/` 이하 | 정적 파일 서빙 (`--web-root`) | 🚧 stub |
-
-**응답 포맷 (합의):** `Content-Type: application/json`
-```json
-{"ok": true, "rows": [...], "elapsed_ms": 2.3, "index_used": true}
-```
+| `--port N` | `8080` | Listen port |
+| `--workers N` | `8` | Initial worker count. Round 2 adds dynamic scaling up to 16. |
+| `--data-dir PATH` | `./data` | CSV + schema storage root |
+| `--web-root PATH` | `./web` | Static-file root for the frontend |
+| `--help` | — | Usage |
+| `--version` | — | Version string |
 
 ---
 
-## 빌드 타겟
+## API
+
+All responses are `Content-Type: application/json`.
+
+| Method | Path | Description |
+|---|---|---|
+| `POST` | `/api/query` | Execute one or more SQL statements (body: raw SQL, `text/plain`) |
+| `POST` | `/api/query?mode=single` | Same as above but forced through the global mutex; used as the serial baseline |
+| `GET` | `/api/explain?sql=...` | Reports index usage and node-visit count for the statement |
+| `GET` | `/api/stats` | Running counters (total queries, cumulative lock wait, active workers) |
+| `POST` | `/api/inject` | Bulk-inject dummy rows. **Placeholder in Round 1** (returns 501); wired up during Round 2. |
+| `GET` | `/` and `/<file>` | Static files under `--web-root` |
+
+Round 2 will add:
+
+| Method | Path | Description |
+|---|---|---|
+| `GET` | `/search?q=...` | Exact match on the indexed key column |
+| `GET` | `/autocomplete?prefix=...` | Trie prefix query (length-capped) |
+| `POST` | `/admin/insert` | Admin write path with cache invalidation |
+
+The Round 2 endpoints are tracked as `TBD` contracts in `CLAUDE.md`
+until implementation merges.
+
+---
+
+## Build Targets
 
 ```bash
-make                # ./minisqld 데몬 빌드                       ✅
-make test           # W7 회귀 227 + engine_lock 단위 테스트 8    ✅
-make tsan           # ThreadSanitizer 빌드 (./minisqld_tsan)     ✅
-make valgrind       # W7 + engine_lock 누수/invalid 0            ✅
-make bench          # B+Tree pure 벤치 (W7 자산)                 ✅
-make repl           # ./minisqld-repl (ANSI CLI 클라이언트)       ✅
-make loadtest       # 동시 N 요청 부하 테스트                      🚧 placeholder (MP5)
-make clean          # 빌드 산출물 + data/ 잔여물 제거              ✅
+make                # Build ./minisqld
+make test           # Run unit + regression tests (W7 + W8 modules)
+make tsan           # ThreadSanitizer build → ./minisqld_tsan
+make valgrind       # Re-run tests under valgrind --leak-check=full
+make bench          # B+Tree microbenchmark from W7 (reference)
+make repl           # ./minisqld-repl, an ANSI HTTP client for the daemon
+make clean
 ```
 
-**CFLAGS**: `-Wall -Wextra -Wpedantic -std=c11 -D_POSIX_C_SOURCE=200809L`.
-CI 는 `-Werror` 로 돌아감.
+`CFLAGS` used by the default build:
+`-Wall -Wextra -Wpedantic -std=c11 -D_POSIX_C_SOURCE=200809L -O2 -g`.
+CI enforces `-Werror`.
 
 ---
 
-## 성능 (1차 mix-merge 직후 스냅샷)
+## Benchmark
 
-> 이 수치는 **1 차 머지 직후 초기 측정값** 입니다. 2차 리팩토링 완료 후
-> 더미 데이터 10만 행 기준으로 재측정해 최종 수치로 대체됩니다.
+> The numbers below will be filled in after the presentation. The table
+> shape is fixed so that runs can be compared round-to-round.
 
-### 환경
-- devcontainer (linux, ubuntu-latest 계열), 8 worker threads
-- 테이블: `users` (빈 상태), SQL: `SELECT * FROM users WHERE id = 1`
+Methodology (planned): 10K random `SELECT` on a 100K-row dictionary
+table, warm caches excluded for the "Single-thread" and "Multi-thread"
+columns, included for "+Cache". Measured via `xargs -P N` against the
+daemon to bypass browser connection limits.
 
-### 서버 측 처리량 (curl 기준, 클라이언트 병목 없음)
+| Scenario | Single-thread | Multi-thread | +Cache | +Dynamic Pool |
+|---|---|---|---|---|
+| 1K SELECT | TBD | TBD | TBD | TBD |
+| 10K SELECT | TBD | TBD | TBD | TBD |
 
-64 요청을 **동시성 정도만 바꾸어** 발사한 전체 소요 시간:
+**Round 1 snapshot** (empty `users` table, 64 concurrent requests via
+`xargs -P 8`, measured directly against the daemon):
 
-| 시나리오 | 총 소요 | vs 순차 | 비고 |
-|---|---|---|---|
-| 순차 (`xargs -P 1`) | **380 ms** | 1.0× | HTTP + TCP 오버헤드 baseline |
-| **멀티 (`xargs -P 8`)** | **85 ms** | **4.5×** | 실효 병렬 4~5 worker |
-| 싱글 (`?mode=single`, `xargs -P 8`) | 145 ms | 2.6× | 전역 mutex 로 직렬화 |
+| Scenario | Total elapsed |
+|---|---|
+| Serial (`xargs -P 1`) | ~380 ms |
+| Multi (`xargs -P 8`, `/api/query`) | ~85 ms |
+| Single (`xargs -P 8`, `?mode=single`) | ~145 ms |
 
-- **멀티 vs 싱글 = 1.7× 차이** (쓰레드풀 + 테이블 RW lock 효과)
-- 빈 테이블이라 쿼리 work 가 아주 작아 메시지가 희석됨. 10만 행 주입 후
-  재측정 시 훨씬 큰 격차 예상 (2차 리팩토링 항목)
-
-재현:
-```bash
-seq 1 64 | xargs -P 8 -I {} curl -s -o /dev/null http://localhost:8080/api/query \
-  -H "Content-Type: text/plain" -d "SELECT * FROM users WHERE id = 1"
-```
-
-### ⚠️ 알려진 제약: 브라우저 기반 스트레스 테스트 왜곡
-
-`web/stress.html` (용 형님 탭) 에서 "멀티" vs "싱글" 을 비교할 때
-**거의 비슷한 시간이 나오는 현상** 이 보입니다. 서버 버그가 **아니라**
-브라우저 특성 때문입니다:
-
-1. 브라우저의 **per-origin 동시 HTTP/1.1 연결 한계 6** (Chrome/Firefox 공통)
-   → JS 가 64 동시 요청을 보내도 실제로는 6 개씩 직렬 처리
-2. 서버가 `Connection: close` 운용 (Keep-alive 미지원)
-   → 요청마다 TCP 핸드셰이크 추가, 브라우저 내부 큐잉 증폭
-3. 빈 테이블 SELECT 는 서버 work 가 HTTP 오버헤드 대비 너무 작아 차이가 노이즈에 묻힘
-
-**진짜 서버 멀티 이득을 보려면** 위 `xargs` 명령을 쓰거나 `./minisqld-repl`
-(향후 `\stress` 내장 명령) 을 사용하세요. 브라우저 시연용 수치는 상대비교
-용도로만 참고.
-
-2차 리팩토링에서 개선 예정:
-- 더미 10만 행 주입 → 쿼리 work 증가 → 브라우저 6-limit 하에서도 차이 가시화
-- stress UI 에 **평균 latency (ms/req)** / **QPS** 표기 추가 (총 시간만으로는 server-side 성능 분리 불가)
-- `scripts/demo_stress.sh` 터미널 시연 스크립트 — 브라우저 제약 완전 우회
-
-### 참고: 자료구조 pure 벤치
-B+Tree 인덱스 vs 선형 탐색 수치는 W7 에서 측정한 **`make bench` 기준**
-(up to 1,842×) — [`docs/README_w7.md`](docs/README_w7.md) 참조. Round 4 의
-end-to-end 수치는 여기에 HTTP + lock 오버헤드가 상수로 더해진 값.
+This is a workload-light snapshot (empty table → server work is
+dominated by HTTP framing). Round 2 will re-run the numbers on a 100K
+dictionary. For the pure B+Tree reference (up to 1,842× speedup on
+indexed reads vs linear scan), see
+[`docs/README_w7.md`](docs/README_w7.md).
 
 ---
 
-## 개발 참여 (팀원용)
+## Team
 
-**필수 숙지:**
-1. [`TEAM_RULES.md`](TEAM_RULES.md) — 브랜치 전략 / PR 규약 / CI / 금지 사항
-2. [`agent.md`](agent.md) — 라운드 설계 결정 + 4 분할 + 마일스톤
-3. [`CLAUDE.md`](CLAUDE.md) — 레포 전역 규칙 (Claude Code 세션 포함)
-4. `include/<본인파트>.h` — 구현 대상 인터페이스 시그니처 (임의 변경 금지)
+- **지용 (Lead)** — Dynamic thread pool, graceful shutdown
+- **동현** — LRU cache, reader-writer lock
+- **승진** — Frontend (Apple/Toss-inspired), autocomplete UI
+- **용** — Trie data structure, prefix search query support
 
-**본인 브랜치:**
-```bash
-git fetch origin
-git checkout feature/<영역>
-```
-
-| 담당 | 브랜치 | 구현 대상 |
-|---|---|---|
-| 동현 | `feature/engine-threadsafe` | `src/engine.c` (+ 최소 W7 엔진 수정) |
-| 용 형님 | `feature/server-protocol` | `src/server.c`, `src/protocol.c`, `src/router.c`, `web/` 탭 (a) |
-| 승진 | `feature/threadpool-stats` | `src/threadpool.c`, stats, `web/` 탭 (c) |
-| 지용 (PM) | `feature/pm-infra` | `include/*.h`, `src/engine_lock.c`, `src/main.c`, Makefile, `client/repl.c` |
-
-**PR 타겟**: `dev` (절대 `main` 아님). `dev` 보호 규약에 4 개 status check
-(build/test/tsan/valgrind) 전부 green 이어야 merge 가능.
+Round 1 ownership was organized differently (engine / server / threadpool
+primitives / PM infra). Round 2 owners are listed above.
 
 ---
 
-## 디렉토리
+## Known Issues / Future Work
+
+- **Thread pool shrink policy is unimplemented in Round 2.** Scale-up at
+  80% utilization is in scope; scale-down (idle worker release) is
+  pending. Long-lived daemons will keep peak-size pools until restart.
+- **Cache coherency model.** Round 2 uses *invalidate-on-write*: an
+  `INSERT` drops affected cache entries. A write-through variant is out
+  of scope for this round.
+- **HTTP Keep-alive unsupported.** Each request uses its own TCP
+  connection (`Connection: close`). Browser-based stress tests are
+  therefore capped at the per-origin connection limit (6). Use
+  `xargs -P` or the REPL for load numbers.
+- **`/api/inject` finalized in Round 2.** The Round 1 router returns
+  `501 Not Implemented` for this endpoint.
+- **CI toolchain install overhead.** `apt-get update` runs on every
+  GitHub Actions job (build / test / tsan / valgrind). A follow-up
+  (`chore/ci-speedup`) will remove it from jobs that don't need
+  `valgrind`.
+
+---
+
+## Directory Structure
 
 ```
-/
-├─ include/               공개 인터페이스 (PM 관리, 시그니처 변경 금지)
-├─ src/                   구현 (W7 엔진 + W8 신규 레이어)
-├─ tests/                 회귀 + 동시성 단위 테스트
-├─ bench/                 B+Tree pure 벤치 (W7 자산)
-├─ scripts/               fixture 생성기
-├─ client/                ANSI REPL CLI 클라이언트
-├─ web/                   Round 4 동시성 데모 페이지 (구현 예정)
-├─ docs/                  아키텍처 다이어그램 + W7 최종본 README
-├─ agent/                 이전 라운드 AI 협업 컨텍스트 아카이브
-├─ prev_project/          이전 라운드 웹 데모 자산 아카이브
-│   ├─ sql_parser_demo/   W6
-│   └─ bp_tree_demo/      W7
-├─ .github/workflows/     CI (build / test / tsan / valgrind)
-├─ CLAUDE.md              레포 전역 규칙
-├─ agent.md               W8 라운드 설계 결정 + 분할
-├─ TEAM_RULES.md          브랜치/PR/CI 규약
-├─ claude_jiyong.md       PM 개인 컨텍스트
-├─ Makefile
-└─ README.md              (이 파일)
+.
+├── include/               Public interface headers (PM-managed)
+├── src/                   C sources (W7 engine + W8 layers)
+├── tests/                 Regression + concurrency unit tests
+├── bench/                 B+Tree pure benchmark (W7)
+├── scripts/               Fixture generators and load scripts
+├── client/                ANSI REPL HTTP client
+├── web/                   Frontend (concurrency demo)
+├── docs/                  Architecture diagrams, prior-round README
+├── agent/                 Archived AI-collaboration context (prior rounds)
+├── prev_project/          Archived prior-round web assets
+│   ├── sql_parser_demo/   W6 parser demo
+│   └── bp_tree_demo/      W7 B+Tree demo
+├── .github/workflows/     CI (build / test / tsan / valgrind)
+├── CLAUDE.md              Project-wide design and decision log
+├── agent.md               Round 1 design decisions and milestones
+├── TEAM_RULES.md          Branching, PR, and CI rules
+├── w8_handoff.md          Round 1 → Round 2 handoff notes
+├── Makefile
+└── README.md              (this file)
 ```
 
 ---
 
-## 팀
+## Previous Rounds
 
-| 이름 | 담당 | 브랜치 |
-|---|---|---|
-| 지용 (PM) | `include/*.h` 인터페이스 + `engine_lock` + mix-merge + ANSI REPL | `feature/pm-infra` |
-| 동현 | `engine.c` thread-safe wrapping + EXPLAIN + `mode=single` | `feature/engine-threadsafe` |
-| 용 형님 | `server.c` + `protocol.c` HTTP + `router.c` + 탭 (a) Stress 데모 | `feature/server-protocol` |
-| 승진 | `threadpool.c` + `/api/stats` + 탭 (c) RW Contention 데모 | `feature/threadpool-stats` |
-
----
-
-## 이전 라운드
-
-- W6 SQL Parser: <https://github.com/JYPark-Code/jungle_w6_mini_mysql_sql_parser>
-- W7 B+Tree Index DB: <https://github.com/JYPark-Code/jungle_w7_BplusTree_Index_DB>
-- W7 최종본 README: [`docs/README_w7.md`](docs/README_w7.md)
+- W6 SQL Parser — <https://github.com/JYPark-Code/jungle_w6_mini_mysql_sql_parser>
+- W7 B+Tree Index DB — <https://github.com/JYPark-Code/jungle_w7_BplusTree_Index_DB>
+- W7 final README — [`docs/README_w7.md`](docs/README_w7.md)
