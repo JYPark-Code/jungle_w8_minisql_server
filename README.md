@@ -36,10 +36,14 @@ end-to-end SQL 처리량이 `make bench` 1,842× 자료구조 수치에 근접.
 
 ## 시연 시나리오 — 영한 사전
 
-**데이터셋**: kengdic 기반 ~10 만 행 `dictionary (english, korean)`. 시드는
-`scripts/gen_dictionary_fixture.py` 로 재생성 가능. fixture 가 없어도 데몬은
-빈 dictionary 테이블을 자동 생성하고 `/api/admin/insert` 부터 받아 쓸 수
-있음 (PR #27 의 chicken-and-egg fix).
+**데이터셋**: **NIKL 한국어기초사전** ([binjang/NIKL-dictionary-parser](https://github.com/binjang/NIKL-dictionary-parser)
+의 `results.csv` 53,172 행) 에서 품사별 영어 headword 추출 + trie (a-z) 호환
+정규화 + 동의어 캡 (영문당 최대 15) 을 거친 **35,016 행 / 8,425 unique
+english** 이 `data/tables/dictionary.csv` 로 들어 있음. 컬럼은 `id, english,
+korean`. 이전 kengdic 기반 (77k + 100k 병합) 본은 `dictionary_merged.csv`
+로 보존. 임의 시드가 필요하면 `scripts/gen_dictionary_fixture.py` 로
+재생성 가능. fixture 가 없어도 데몬은 빈 dictionary 테이블을 자동 생성하고
+`/api/admin/insert` 부터 받아 쓸 수 있음 (PR #27 chicken-and-egg fix).
 
 ### 1. 단일 단어 조회 — cache hit 동작 보기
 
@@ -238,9 +242,11 @@ cd jungle_w8_minisql_server
 # 1. 빌드 (C11 toolchain + pthread 외 의존성 0)
 make
 
-# 2. (선택) 영한사전 fixture 생성 — kengdic 기반 ~10 만 행
+# 2. dictionary 데이터
+#    - 레포 기본: NIKL 한국어기초사전 기반 35,016 행 (data/tables/dictionary.csv)
+#    - 임의 영문/한글 시드가 필요하면 fixture 생성기:
 mkdir -p data
-python3 scripts/gen_dictionary_fixture.py    # data/tables/dictionary.csv 생성
+python3 scripts/gen_dictionary_fixture.py    # data/tables/dictionary.csv 덮어쓰기
 
 # 3. 데몬 기동 (워커 8 시작, 부하에 따라 16 까지 자동 확장)
 ./minisqld --port 8080 --workers 8 --data-dir ./data --web-root ./web
