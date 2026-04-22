@@ -24,3 +24,7 @@ test_threadpool
 test_trie
 test_dict_cache
 test_router
+
+# Storage 런타임 아티팩트 (팀이 data 디렉터리 트랙 허용 이후 추가)
+data/tables/*.tmp
+data/tables/*.bin
