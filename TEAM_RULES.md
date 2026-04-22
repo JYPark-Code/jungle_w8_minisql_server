@@ -233,12 +233,14 @@ PM 이 MP0 에서 다음 타겟을 제공:
 
 - ❌ `main`, `dev` 에 직접 push
 - ❌ force push (`--force-with-lease` 예외)
-- ❌ self-merge (본인 PR 을 본인이 approve/merge)
+- ❌ self-merge — **단서**: Round 2 현재 PM (admin) 은 `dev` 의 `enforce_admins=false` 덕분에 본인 PR self-merge 가능. 일반 팀원 PR 은 여전히 PM approve 필요
 - ❌ CI 실패 상태로 merge
-- ❌ `include/*.h` PM 승인 없이 수정
+- ❌ `include/*.h` PM 승인 없이 수정 (단, **새 모듈 헤더** (예: Round 2 의 `include/cache.h`, `include/trie.h`) 는 해당 담당자가 생성. 기존 5 개 헤더 수정은 여전히 PM 승인)
 - ❌ 외부 HTTP/JSON 라이브러리 추가
 - ❌ W7 엔진 코드 수정 (동현만 가능)
 - ❌ `prev_project/`, `agent/` 수정
+- ❌ **Round 2 소유권 매트릭스 (§10-1) 의 "건드리면 안 됨" 열 위반**.
+  교차 수정 필요 시 `§10-3` 승인 절차 경유
 
 ---
 
@@ -246,9 +248,95 @@ PM 이 MP0 에서 다음 타겟을 제공:
 
 MP0 완료 전에 PM 이 확인:
 
-- [ ] GitHub 에서 `main` 브랜치 보호 규약 설정 완료
-- [ ] GitHub 에서 `dev` 브랜치 생성 및 보호 규약 설정 완료
-- [ ] `.github/workflows/ci.yml` 에 4 개 잡(build/test/tsan/valgrind) 정의
-- [ ] `dev` 보호 규약에 "Require status checks: build, test, tsan, valgrind" 등록
-- [ ] 팀원 4 명 feature 브랜치 생성 완료
-- [ ] 이 `TEAM_RULES.md` 를 슬랙에 공유
+- [x] GitHub 에서 `main` 브랜치 보호 규약 설정 완료
+- [x] GitHub 에서 `dev` 브랜치 생성 및 보호 규약 설정 완료
+- [x] `.github/workflows/ci.yml` 에 4 개 잡(build/test/tsan/valgrind) 정의
+- [x] `dev` 보호 규약에 "Require status checks: build, test, tsan, valgrind" 등록
+- [x] 팀원 4 명 feature 브랜치 생성 완료
+- [x] 이 `TEAM_RULES.md` 를 슬랙에 공유
+
+---
+
+## 10. Round 2 작업 소유권 + 교차 파일 수정 규약
+
+> Round 2 는 4 개 신기능 (동적 TP / LRU 캐시 / Trie / FE 재디자인) 이 병렬
+> 진행. 파일 경계 규칙을 명확히 해서 mix-merge 충돌과 설계 권한 분쟁을
+> 사전에 차단한다. Round 1 의 `§1 브랜치 전략` 과 `§8 금지 사항 요약` 을
+> 우선하고, 본 섹션이 Round 2 에 한해 덧붙이는 규칙이다.
+
+### 10-1. 소유권 매트릭스
+
+| 담당 | 브랜치 (제안) | 주 소유 파일 | 교차 허용 (PM review 필수) | 건드리면 안 됨 |
+|---|---|---|---|---|
+| 지용 (Lead, TP) | `feature/dynamic-threadpool` | `src/threadpool.c`, `include/threadpool.h` (API 추가), `src/server.c` (graceful shutdown 연계), `tests/test_threadpool.c` 보강 | `src/main.c` (signal handler 보강) | `src/cache.c`, `src/trie.c`, `src/engine.c`, `web/` |
+| 동현 (Cache) | `feature/lru-cache` | `src/cache.c` (신규), `include/cache.h` (신규), `src/engine.c` (cache 통합), `tests/test_cache.c` (신규) | `src/router.c` 의 `/api/stats` 응답에 `cache_hits`/`misses` 필드 추가 | `src/server.c`, `src/threadpool.c`, `src/trie.c`, `web/` |
+| 용 (Trie) | `feature/trie-prefix` | `src/trie.c` (신규), `include/trie.h` (신규), `src/engine.c` (prefix dispatcher), `tests/test_trie.c` (신규) | `src/router.c` 에 `/search`, `/autocomplete` handler 추가 | `src/server.c`, `src/threadpool.c`, `src/cache.c`, `web/` |
+| 승진 (FE) | `feature/ui-redesign` | `web/` 전체 | — (백엔드 무수정) | `src/`, `include/`, `Makefile`, `.github/` |
+
+### 10-2. 병렬 진행 허가 (승진 FE)
+
+- 승진의 FE 작업은 **백엔드 구현 완료를 기다릴 필요가 없다**. 다음 3 가지
+  근거:
+  1. `web/` 만 건드리므로 백엔드 파일 경계 침범 0
+  2. `CLAUDE.md § 모듈 간 인터페이스 (d) FE ↔ Server (HTTP API)` 의
+     엔드포인트 스펙이 TBD 초안으로 확정되어 있음 → **계약** 으로 간주하고
+     mock fetch 로 시작 가능
+  3. 기존 `/api/query` 는 Round 1 머지 결과 정상 동작 → dictionary 기본
+     조회는 즉시 E2E 테스트 가능
+- 자동완성 (`/autocomplete`) 과 관리자 등록 (`/admin/insert`) 은 구현 전
+  stub 응답으로 UI 만 먼저 완성. 엔드포인트 실제 연결은 mix-merge 시점
+  에서 fetch URL 1 줄 수정으로 끝난다
+
+### 10-3. 교차 파일 수정 승인 절차
+
+- **원칙**: "본인 담당 외 파일은 수정 금지" (Round 1 `§8` 유지). 아래는
+  Round 2 에서 미리 **합의 완료** 된 예외.
+- **허용된 교차 수정** (위 매트릭스 "교차 허용" 열):
+  - PR 본문에 *어느 파일의 어느 함수를 몇 줄 수정했는지* 명시
+  - PM 이 리뷰에서 범위 확인 (허용 범위 초과 시 request changes)
+- **사전 합의 안 된 추가 교차 수정이 필요해지면**:
+  1. DM 으로 PM 에게 요청 (Slack / 이 레포 이슈 중 택 1)
+  2. **구현 시작 전** 승인 받을 것 (PR 올리고 나서 승인 요청 지양)
+  3. 승인 내용은 PR 본문 "참고 / 질문" 섹션에 기록
+- **거절 예시 (Round 2 회의 결정)**:
+  - ❌ 동현 가 `src/server.c` 에 cache 라이프사이클 훅을 직접 추가하는 것
+    → 기각. `engine_init` / `engine_shutdown` (동현 소유) 범위 내에서
+    `cache_create` / `cache_destroy` 호출하면 충분. server.c 의 SIGINT 경로
+    (`claude_jiyong.md § mix-merge Zone 4`) 에 race 도입 방지 목적
+  - 예외 단서: 성능 측정 결과 engine_lock 과 cache rwlock 의 경합이
+    심각하다고 확인되면 PM 재검토 — 지금은 engine 스코프로 시작
+
+### 10-4. 의도된 overlap (mix-merge 포인트)
+
+Round 1 과 동일하게 일부러 겹치게 둔 지점. PM 이 mix-merge 시 좋은 쪽을
+채택.
+
+| 지점 | 겹치는 두 사람 | 이유 |
+|---|---|---|
+| `src/engine.c` | 동현 (cache wrap) ↔ 용 (trie dispatcher) | 둘 다 `engine_exec_sql` 에 삽입 포인트 필요. 동현 은 outer wrap (cache check → miss 시 호출 → put), 용 은 inner dispatch (SELECT 의 prefix 여부 분기) |
+| `src/router.c` | 동현 (stats 필드 확장) ↔ 용 (신규 endpoint) | 양쪽 모두 함수 단위 추가만 하므로 상충 낮음. PM 이 마지막에 라우팅 테이블 통합 |
+| `CLAUDE.md § 모듈 간 인터페이스` 의 TBD 시그니처 | 4 명 전원 | 구현 시작 전 각자 리뷰 → 동의 시 PR 에 `interface-signed-off: <name>` 태그 본문에 기재 |
+
+### 10-5. Round 2 brach 이름 규약
+
+- 패턴: `feature/<역할>-<핵심키워드>` (kebab-case)
+- 제안:
+  - `feature/dynamic-threadpool` (지용)
+  - `feature/lru-cache` (동현)
+  - `feature/trie-prefix` (용)
+  - `feature/ui-redesign` (승진)
+- 실제 생성은 Round 1 과 동일하게 PM 이 사전 생성 후 공유
+
+### 10-6. Round 2 PR 본문 추가 체크리스트
+
+Round 1 `§3-2` 의 기본 템플릿에 **Round 2 전용 항목** 추가:
+
+```markdown
+## Round 2 해당 체크
+- [ ] `CLAUDE.md § 모듈 간 인터페이스` 의 내 모듈 TBD 시그니처가 실제
+      구현과 일치 (불일치 시 이 PR 에서 CLAUDE.md 같이 수정)
+- [ ] 본 PR 에서 교차 수정한 파일이 `TEAM_RULES.md § 10-1` 의 "교차
+      허용" 범위 안에 있음. 초과 시 사전 DM 승인 기록 첨부
+- [ ] 의도된 overlap 지점 (`§ 10-4`) 에 해당하면, 상대 담당자의 PR
+      상태 확인 후 본인 PR 본문에 링크
+```
