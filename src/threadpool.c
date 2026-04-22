@@ -37,6 +37,9 @@
 #define TP_HIGH_CONSECUTIVE   3   /* 확장 트리거까지의 연속 고점 샘플 수 */
 #define TP_LOW_CONSECUTIVE   30   /* 축소 트리거까지의 연속 저점 샘플 수 */
 #define TP_HYSTERESIS_SAMPLES 2   /* resize 직후 무시할 샘플 수 */
+#define TP_QUEUE_MAX_DEFAULT 256  /* bounded queue 기본 상한
+                                   * (16 worker × 16 pending). 통합 회의에서
+                                   * 무제한 큐 OOM 위험 지적 → fail-fast. */
 
 /* ── 내부 타입 ─────────────────────────────────────────────────────────── */
 
@@ -67,6 +70,8 @@ struct threadpool {
     threadpool_job_t *head;
     threadpool_job_t *tail;
     int               queue_depth;
+    int               queue_max;        /* 0 = unlimited, >0 = bounded fail-fast */
+    atomic_ulong      rejected_total;   /* 큐 상한 초과로 거절된 누적 submit 수 */
     int               active_workers;   /* 실행 중 (job 을 쥐고 있는) 수 */
 
     int               shutdown;         /* hard shutdown flag */
@@ -332,6 +337,8 @@ threadpool_t *threadpool_create(int n_workers) {
 
     tp->floor_workers = n_workers;
     tp->n_workers     = 0;   /* expand_locked 가 증가시킴 */
+    tp->queue_max     = TP_QUEUE_MAX_DEFAULT;
+    atomic_init(&tp->rejected_total, 0);
 
     pthread_mutex_lock(&tp->mutex);
     int added = threadpool_expand_locked(tp, n_workers);
@@ -366,6 +373,13 @@ int threadpool_submit(threadpool_t *tp, threadpool_job_fn fn, void *arg) {
     pthread_mutex_lock(&tp->mutex);
     if (tp->shutdown || tp->submit_closed) {
         pthread_mutex_unlock(&tp->mutex);
+        free(job);
+        return -1;
+    }
+
+    if (tp->queue_max > 0 && tp->queue_depth >= tp->queue_max) {
+        pthread_mutex_unlock(&tp->mutex);
+        atomic_fetch_add_explicit(&tp->rejected_total, 1, memory_order_relaxed);
         free(job);
         return -1;
     }
@@ -531,4 +545,28 @@ int threadpool_total_workers(const threadpool_t *tp) {
     total = tp->n_workers;
     pthread_mutex_unlock((pthread_mutex_t *)&tp->mutex);
     return total;
+}
+
+int threadpool_set_queue_max(threadpool_t *tp, int max) {
+    int prev;
+    if (tp == NULL || max < 0) return -1;
+    pthread_mutex_lock(&tp->mutex);
+    prev = tp->queue_max;
+    tp->queue_max = max;
+    pthread_mutex_unlock(&tp->mutex);
+    return prev;
+}
+
+int threadpool_queue_max(const threadpool_t *tp) {
+    int max;
+    if (tp == NULL) return 0;
+    pthread_mutex_lock((pthread_mutex_t *)&tp->mutex);
+    max = tp->queue_max;
+    pthread_mutex_unlock((pthread_mutex_t *)&tp->mutex);
+    return max;
+}
+
+unsigned long threadpool_rejected_total(const threadpool_t *tp) {
+    if (tp == NULL) return 0;
+    return atomic_load_explicit(&tp->rejected_total, memory_order_relaxed);
 }

@@ -132,6 +132,16 @@ int server_run(const server_config_t *cfg) {
         }
 
         if (threadpool_submit(pool, handle_client, (void *)(intptr_t)client_fd) != 0) {
+            static const char busy_resp[] =
+                "HTTP/1.1 503 Service Unavailable\r\n"
+                "Connection: close\r\n"
+                "Retry-After: 1\r\n"
+                "Content-Type: application/json\r\n"
+                "Content-Length: 33\r\n"
+                "\r\n"
+                "{\"ok\":false,\"error\":\"queue_full\"}";
+            ssize_t wn = write(client_fd, busy_resp, sizeof(busy_resp) - 1);
+            (void)wn;
             close(client_fd);
         }
     }

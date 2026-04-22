@@ -139,7 +139,7 @@ curl 'http://localhost:8080/api/autocomplete?prefix=app&limit=5'
 | 레이어 | 파일 | 동시성 전략 |
 |---|---|---|
 | Socket | `src/server.c` | 메인 스레드 `accept()` + SIGINT 시 graceful drain (5 s) |
-| Thread pool | `src/threadpool.c` | mutex + condvar queue, **동적 resize** (4 → 16, +4 @ ≥80% 3 회 연속) |
+| Thread pool | `src/threadpool.c` | mutex + condvar **bounded queue (cap 256)** + 동적 resize (4 → 16, +4 @ ≥80% 3 회 연속). 큐 가득 시 submit -1 → server 가 즉시 503 |
 | HTTP | `src/protocol.c`, `src/router.c` | 워커당 stateless |
 | Dict Cache | `src/dict_cache.c` | **`pthread_rwlock_t` + atomic LRU clock** — get rdlock, put / invalidate wrlock. cache miss 시 DB 조회는 cache lock 밖 |
 | Engine | `src/engine.c`, `src/engine_lock.c` | 테이블 RW lock + catalog lock + `?mode=single` 직렬화 |
@@ -231,6 +231,31 @@ reader / 1 writer 로 발사 → reader 들이 전부 cache hit → engine RW lo
 도 추가해 hit rate 인위 조절. 시연 시 "캐시 효과 그래프" 와 "RW lock 경쟁
 그래프" 를 분리해서 보여줌.
 
+### 7. 통합 회의: 무제한 큐 → bounded 256 + 503 fail-fast
+
+**문제**. Round 2 통합 회의에서 지적: threadpool 의 job queue 가 linked
+list 무제한이라 부하 급증 시 `calloc` 실패 직전까지 계속 쌓임. 그 시점엔
+이미 OOM 임박 → in-flight 쿼리 포함 서버 전체 flat. accept loop 는 그 와중
+에도 계속 fd 를 받아 큐에 던지므로 자기강화.
+
+**해결**. bounded queue + fail-fast. `TP_QUEUE_MAX_DEFAULT = 256` —
+워커 cap 16 × 16 pending/worker 근거 (큐 끝 대기 시간 ≈ 160 ms 로 client
+timeout 안 걸리는 범위).
+
+- `src/threadpool.c::threadpool_submit` — `queue_depth >= queue_max` 면
+  -1 반환, atomic `rejected_total` 증가
+- `src/server.c` accept loop — submit 실패 시 즉시
+  `HTTP/1.1 503 Service Unavailable` + `Retry-After: 1` + body
+  `{"ok":false,"error":"queue_full"}` 후 `close(fd)`. client 가 명시적으로
+  backoff
+- 신규 API: `threadpool_set_queue_max(tp, 0)` 으로 unlimited 토글
+  (테스트 / 측정용), `threadpool_rejected_total(tp)` 로 관찰
+
+**대안 비교**.
+- *blocking submit (큐 찰 때까지 대기)* — backpressure 를 TCP backlog 로
+  옮긴 것뿐. accept loop 가 block → client 에는 같은 hang. 기각
+- *drop-oldest* — drop 된 fd 의 client 는 무한 대기. HTTP 부적절. 기각
+
 ---
 
 ## Quick Start (시연 흐름)
@@ -298,6 +323,11 @@ stderr 에 `[server] listening on port 8080` 이 찍히면 준비 완료. dictio
 | `GET` | `/` 및 `/<file>` | `--web-root` 하의 정적 파일 |
 
 503 `warming_up` 응답은 데몬이 아직 ready 가 아닌 상태. 보통 부팅 후 < 1 s.
+
+**Backpressure (`queue_full` 503)**: threadpool 큐가 상한 (기본 256) 을 초과
+하면 server 가 즉시 `HTTP/1.1 503 Service Unavailable` + `Retry-After: 1` +
+`{"ok":false,"error":"queue_full"}` 반환 후 connection 종료. client 는 그
+헤더를 보고 backoff. Trouble Log §7 참조.
 
 ---
 

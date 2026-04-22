@@ -79,4 +79,17 @@ int  threadpool_queue_depth(const threadpool_t *tp);
 /* 현재 총 worker 수 (확장/축소에 따라 변동). 모니터링용. */
 int  threadpool_total_workers(const threadpool_t *tp);
 
+/* 큐 상한 (기본 256). bounded + fail-fast backpressure.
+ *   max >  0 : queue_depth >= max 이면 threadpool_submit 이 -1 (reject)
+ *   max == 0 : unlimited (legacy 동작, 테스트용)
+ *   max <  0 : invalid, 변경 안 함
+ * return: 이전 값. */
+int  threadpool_set_queue_max(threadpool_t *tp, int max);
+
+/* 현재 큐 상한. 모니터링용. */
+int  threadpool_queue_max(const threadpool_t *tp);
+
+/* 큐 상한 초과로 거절된 누적 submit 수. 락 없이 atomic 읽기. */
+unsigned long threadpool_rejected_total(const threadpool_t *tp);
+
 #endif /* THREADPOOL_H */

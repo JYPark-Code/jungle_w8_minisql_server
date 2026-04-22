@@ -326,6 +326,8 @@ static void test_shutdown_drains_pending_jobs(void) {
         return;
     }
 
+    threadpool_set_queue_max(tp, 0);   /* drain 시나리오는 10K 일괄 enqueue 필요 */
+
     counter_ctx_init(&ctx, 0);
     for (int i = 0; i < kJobCount; i++) {
         int rc = threadpool_submit(tp, counting_job, &ctx);
@@ -369,6 +371,9 @@ static void test_concurrent_enqueue_10k(void) {
 
     CHECK(tp != NULL, "threadpool_create 성공");
     CHECK(seen != NULL, "10K seen 배열 할당 성공");
+    if (tp != NULL) {
+        threadpool_set_queue_max(tp, 0);   /* 4 producer × 10K enqueue burst */
+    }
     if (tp == NULL || seen == NULL) {
         free(seen);
         threadpool_shutdown(tp);
