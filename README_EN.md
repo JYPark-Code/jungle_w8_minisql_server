@@ -23,7 +23,7 @@ per-owner branches; the scope is frozen and listed under
 | Round | Scope | Status |
 |---|---|---|
 | Round 1 (MP0~MP4) | Daemon skeleton, HTTP/1.1 server, fixed thread pool, per-table RW locks, stub-driven mix-merge | ✅ merged to `dev` |
-| Round 2 | Dynamic thread pool, LRU cache, Trie prefix search, redesigned UI | ⏳ in progress |
+| Round 2 | Dynamic thread pool, router-level dict cache, Trie prefix search (ASCII English), redesigned UI | ⏳ in progress |
 | Final | Integration, benchmarks, README numbers, `dev → main` | ⏳ pending |
 
 ---
@@ -52,11 +52,14 @@ per-owner branches; the scope is frozen and listed under
   utilization reaches 80%, capped at 16. Shrink policy is deliberately
   left unimplemented in this round (see
   [Known issues](#known-issues--future-work)).
-- **LRU result cache with reader/writer lock.** Concurrent readers share
-  the cache; writers (INSERT) invalidate affected keys.
-- **Trie-based prefix search.** Enables autocomplete queries in
-  `O(k)` over the input prefix length, in addition to the existing
-  B+Tree point/range lookups.
+- **Router-level dict cache with reader/writer lock.** Scoped to the
+  `/api/dict` endpoint. Concurrent readers share the cache; writes via
+  `/api/admin/insert` invalidate the affected key. Placing the cache at
+  the router (rather than inside the engine) keeps the engine's hot path
+  clean and limits the cache surface to the dictionary service.
+- **Trie-based prefix search (ASCII English only).** Enables autocomplete
+  queries in `O(k)` over the input prefix length, in addition to the
+  existing B+Tree point/range lookups. Korean body column is not indexed.
 - **Redesigned frontend.** Minimal Apple/Toss-inspired UI replacing the
   dark-theme stress page used during Round 1.
 
@@ -80,7 +83,7 @@ per-owner branches; the scope is frozen and listed under
 └──────┬────────────────────────┘
        ▼
 ┌───────────────────────────────┐       ┌─────────────────────────┐
-│ Cache Layer  (LRU + RWLock)   │◀──────│ invalidate on INSERT    │
+│ Router + Dict Cache (LRU+RW)  │◀──────│ invalidate on INSERT    │
 └──────┬────────────────────────┘       └──────────┬──────────────┘
        │ miss                                      │
        ▼                                           │
@@ -94,9 +97,9 @@ per-owner branches; the scope is frozen and listed under
 | Socket | `src/server.c` | `accept()` on main thread; `fd` handed to pool |
 | Thread pool | `src/threadpool.c` | mutex + condvar queue; dynamic resize (R2) |
 | HTTP | `src/protocol.c`, `src/router.c` | stateless per worker |
-| Cache | `src/cache.c` (R2) | LRU, reader/writer lock |
+| Router + Dict Cache | `src/router.c`, `src/cache.c` (R2) | LRU under a single rwlock; router itself is stateless per worker |
 | Engine | `src/engine.c`, `src/engine_lock.c` | per-table RW lock + catalog lock + single-mode mutex |
-| Index | `src/bptree.c`, `src/trie.c` (R2) | read-side locked via engine layer |
+| Index | `src/bptree.c`, `src/trie.c` (R2, ASCII English only) | read-side locked via engine layer; reverse Korean lookup falls back to linear scan |
 | Storage | `src/storage.c` (W7) | engine layer serializes writes |
 
 Diagram mirrors `CLAUDE.md § Architecture`. The module-boundary contracts
@@ -107,18 +110,24 @@ flagged `TBD` until the four teams confirm signatures.
 
 ## Demo Scenario
 
-**Use case: a language-dictionary service.** Chosen because it exercises
-all three Round 2 features on the same data set:
+**Use case: English-to-Korean dictionary service.** Type an English
+word, receive the Korean meaning. Round 2's three features are exercised
+on the same data set:
 
-1. **Concurrent reads (SELECT).** Many users simultaneously look up
-   definitions by word ID or exact spelling. Exercises per-table
-   read-lock sharing and cache hits.
-2. **Operator insert (INSERT).** An admin adds a new word. Exercises
-   per-table write-lock serialization and cache invalidation of stale
-   prefix / exact-match results.
-3. **Real-time autocomplete.** As the user types, the UI hits a
-   prefix-search endpoint. Exercises the trie index and concurrent read
-   throughput.
+1. **Concurrent lookup (`/api/dict?word=apple`).** Many users
+   simultaneously look up Korean meanings for English words. The
+   router-level dict cache absorbs repeated lookups.
+2. **Operator insert (`/api/admin/insert`).** An admin adds a new
+   english/korean pair. Exercises table write-lock serialization + dict
+   cache invalidation for the english key.
+3. **Real-time autocomplete (`/api/autocomplete?prefix=app`).** As the
+   user types an English prefix, the trie yields matching words. ASCII
+   lowercase English only.
+
+**Reverse lookup (option B)**: `/api/dict?korean=사과` also works — since
+the Korean body column is not indexed, the query falls back to the W7
+executor's linear scan. It is functional but slow; useful as a live
+"indexed vs unindexed" comparison during the demo.
 
 The demo page (`web/concurrency.html`) drives these three flows and
 surfaces the metrics that come out of `GET /api/stats` — active workers,
@@ -194,9 +203,10 @@ Round 2 will add:
 
 | Method | Path | Description |
 |---|---|---|
-| `GET` | `/search?q=...` | Exact match on the indexed key column |
-| `GET` | `/autocomplete?prefix=...` | Trie prefix query (length-capped) |
-| `POST` | `/admin/insert` | Admin write path with cache invalidation |
+| `GET` | `/api/dict?word=<english>` | English-to-Korean lookup (primary). Dict-cache hit path; on miss goes through the engine. |
+| `GET` | `/api/dict?korean=<korean>` | Reverse lookup (option B). Unindexed linear scan; functional but slow. |
+| `GET` | `/api/autocomplete?prefix=<english>` | Trie prefix query (ASCII lowercase English only, length-capped) |
+| `POST` | `/api/admin/insert` | Insert a new `english`/`korean` pair; invalidates the dict-cache entry for that english key |
 
 The Round 2 endpoints are tracked as `TBD` contracts in `CLAUDE.md`
 until implementation merges.
@@ -270,9 +280,15 @@ primitives / PM infra). Round 2 owners are listed above.
 - **Thread pool shrink policy is unimplemented in Round 2.** Scale-up at
   80% utilization is in scope; scale-down (idle worker release) is
   pending. Long-lived daemons will keep peak-size pools until restart.
-- **Cache coherency model.** Round 2 uses *invalidate-on-write*: an
-  `INSERT` drops affected cache entries. A write-through variant is out
-  of scope for this round.
+- **Cache scope = `/api/dict` only.** The cache is at the router, not
+  inside the engine. Coherency policy is *invalidate-on-write*: a
+  successful `/api/admin/insert` drops the dict-cache entry for that
+  english key. A write-through variant is out of scope.
+- **One-way primary (English→Korean); reverse Korean lookup is a linear
+  scan.** The trie indexes only `dictionary.english`. A
+  `/api/dict?korean=...` request is routed through the W7 executor's
+  linear scan — functional but slow. Useful as a live "indexed vs
+  unindexed" comparison in the demo.
 - **HTTP Keep-alive unsupported.** Each request uses its own TCP
   connection (`Connection: close`). Browser-based stress tests are
   therefore capped at the per-origin connection limit (6). Use
