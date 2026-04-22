@@ -1,210 +1,292 @@
-# agent.md — W8 Round 설계 결정 + 4 분할 + 마일스톤
+# agent.md — W8 Round 2: 설계 요약 + 팀원 작업 영역 + 에이전트 규칙
 
-이 파일은 이번 라운드(W8) 의 **모든 설계 결정과 작업 분할**을 담습니다.
-팀원은 본인 작업 시작 전 이 파일 전체를 읽어야 합니다.
+이 파일은 W8 **2차 리팩토링 라운드**의 설계 요약, 팀원별 작업 영역,
+그리고 코드 수정을 수행하는 에이전트가 따라야 할 행동 규칙을 정의한다.
+
+작업 시작 전에 본 문서 전체를 읽고, 본인 담당 외 모듈을 건드릴 때는
+"4. 팀원 작업 영역" 의 담당자 컨벤션과 zone 매트릭스를 먼저 확인할 것.
+
+> **Source of truth (이 문서는 요약본)**
+> - `CLAUDE.md § 2차 리팩토링 결정사항 / 모듈 간 인터페이스` — 함수 시그니처, 자료구조 디테일
+> - `TEAM_RULES.md § 10` — 브랜치별 작업 소유권, 교차 파일 수정 규약 매트릭스
+> - `docs/round2_integration_map.md` — 동현(cache) / 용(trie) 의 router·engine zone 분할
+> - `w8_handoff.md` — 1차 mix-merge 결과와 그때까지의 작업 분할 히스토리
 
 ---
 
 ## 1. 목표
 
-W7 B+Tree Index DB 엔진을 **단일 C 데몬**으로 감싸서, 외부 클라이언트가
+W7 B+Tree Index DB 엔진을 단일 C 데몬으로 감싸 외부 클라이언트가
 HTTP 로 SQL 을 실행할 수 있는 멀티스레드 미니 DBMS 를 완성한다.
 
-**발표 핵심 메시지:**
-> "W7 의 subprocess 모델 한계(요청당 1.8s rebuild 고정비) 를 데몬화로 제거.
-> 결과: `make bench` 1,842× 수치에 SQL end-to-end 성능이 근접."
+**2차 발표 시나리오: 영한 사전 (English → Korean)**
+
+> "다수 사용자가 영어 단어를 검색 (`/api/dict?english=apple`) 해서 한글
+> 뜻을 받아가는 도중, 운영자가 새 단어를 등록 (`POST /api/admin/insert`).
+> 동적 쓰레드 풀 + **router-level dict cache** (`src/dict_cache.c`) +
+> RW lock 으로 read 폭주를 흡수하면서 write 도 막히지 않는다. 영어 prefix
+> 자동완성은 Trie."
+
+사전 방향: 영한 (English key → Korean meaning) 이 primary.
+역방향 (한글 body → 영어) 은 인덱스 없이 선형 스캔, 동작은 OK / 느림.
 
 ---
 
-## 2. 설계 결정 (변경 불가)
+## 2. 설계 결정 요약 (4 항목)
 
-### 2-1. 프로세스 모델
-- **단일 C 데몬** (`./minisqld`). Python 중계 서버 없음
-- 정적 파일 서빙도 데몬이 직접 수행 (`--web-root ./web`)
+> 각 항목의 (왜 / 설계 / 영향 범위) 상세는 `CLAUDE.md § 2차 리팩토링
+> 결정사항` 참조. 본 섹션은 에이전트가 코드 수정 시 떠올려야 할
+> **요지** 만 적는다.
 
-### 2-2. 프로토콜
-- HTTP/1.1, 직접 작성 (외부 라이브러리 0)
-- Request body 는 **raw SQL** (Content-Type: text/plain)
-- Response 만 JSON
-- Keep-alive 미지원 (connection = job 단위, close 로 끝)
+### 2-1. 동적 쓰레드 풀
+- 시작 4 워커, 사용률 ≥ 80% 가 일정 시간 지속되면 **+4 확장**, 상한 **16**
+- 모니터 쓰레드가 1 초 간격으로 atomic stats 만 읽고 판단
+- scale-down 은 Round 2 범위 외 (향후 과제)
+- graceful shutdown: accept 중단 → drain (timeout) → join
 
-### 2-3. 동시성
-- **Thread pool**: 고정 크기 N workers, blocking queue (mutex + condvar)
-- **락 전략**:
-  - 테이블 단위 `pthread_rwlock_t` (SELECT = rdlock, INSERT/UPDATE/DELETE = wrlock)
-  - 글로벌 catalog lock 1개 (CREATE/DROP TABLE)
-  - `mode=single` 토글 시 전역 mutex 로 모든 요청 직렬화
-- **Stats**: atomic 카운터
+### 2-2. **Router-level dict cache** + Reader-Writer Lock ⚠ 2026-04-22 pivot
+- 위치: `src/dict_cache.c` (LRU) + `src/dict_cache.h` (private 헤더, src/ 안)
+  를 **`src/router.c` 의 `/api/dict` 핸들러 안에서만** 호출
+- **`src/engine.c` 는 dict cache 를 모른다.** 엔진 핵심 경로 (parse →
+  execute → storage) 무오염
+- 캐시 키 체계 — prefix 분리:
+  - `english:<word>` (영한 primary, 예: `english:apple`)
+  - `id:<N>` (id 조회 옵션)
+  - 역방향 `?korean=` 은 dict cache 미적용 (engine 직행)
+- 일관성: invalidate-on-write (`/api/admin/insert` 성공 시 해당
+  `english:<word>` key invalidate)
+- 동시성: 단일 `pthread_rwlock_t` (또는 mutex) — get=rdlock, put/invalidate=wrlock
+- **cache miss 후 DB 조회는 cache lock 밖에서 수행** → 전체 캐시가 오래
+  잠기지 않음. 같은 단어 동시 miss 시 중복 DB 조회는 허용 trade-off
 
-### 2-4. 데모 페이지 (`web/`)
-- **탭 (a) Concurrent Stress**: 동시 요청 수 슬라이더, 싱글 vs 멀티 모드 비교
-- **탭 (c) RW Contention**: SELECT 동시 100 vs INSERT 동시 100 병렬 시각화
-- 이전 데모(W6/W7) 는 `prev_project/` 에 아카이브, Round 4 와 무관
+> 초안의 "엔진 내부 query cache" 는 SQL normalize / lifetime / race
+> window 복잡도 때문에 기각. 사전 서비스 범위에선 엔드포인트 단위 캐싱이
+> 충분하다는 동현 의견 수용 (회의: 2026-04-22).
 
-### 2-5. `mode=single` 토글
-- 데몬에 쿼리 파라미터 `?mode=single` 붙이면 전역 mutex 로 강제 직렬화
-- 발표 데모용 "비교 baseline". 구현 ~10 줄
+### 2-3. Trie 기반 prefix search (ASCII 영어 only)
+- 인덱스 대상: `dictionary.english` 컬럼만. 노드당 자식 26 고정 (a-z)
+- `/api/autocomplete?prefix=ap` → trie 직접 조회 (캐시 미적용)
+- 한글 / 대문자 / 숫자 / 기호 prefix 는 router 핸들러에서 400, trie 진입 전 차단
+- 동시성: 1차는 engine_lock 의 테이블 wrlock 에 의존 (trie 내부 세분화 락 X)
+- INSERT 는 B+Tree + Trie 두 인덱스 모두 갱신 (둘 다 성공해야 commit)
 
----
-
-## 3. 아키텍처
-[Client / Browser]
-│ HTTP/1.1
-▼
-┌─────────────────────────────────────────┐
-│  minisqld (단일 프로세스)                │
-│                                          │
-│  server.c        accept loop            │
-│       │                                  │
-│       │ enqueue(fd)                      │
-│       ▼                                  │
-│  threadpool.c    N workers              │
-│       │                                  │
-│       ▼                                  │
-│  protocol.c      HTTP parse             │
-│  router.c        method+path → handler  │
-│       │                                  │
-│       ▼                                  │
-│  engine.c        RW lock per table      │
-│       │          global catalog lock    │
-│       ▼                                  │
-│  [parser/executor/storage/bptree]       │
-│  (W7 엔진 자산, in-process 재사용)      │
-└─────────────────────────────────────────┘
+### 2-4. FE 디자인 — 애플 / 토스 톤 + 자동완성
+- light / minimal, accent 1색, 폰트 Pretendard / Inter
+- 검색창 debounce 150 ms → `/api/autocomplete?prefix=` 로 5 개 suggestion
+- 운영자 INSERT 패널은 별도 "Admin" 탭
 
 ---
 
-## 4. 작업 분할
+## 3. 아키텍처 (Round 2)
 
-### 4-1. 지용 (PM) — 인터페이스 + concurrency core + mix-merge
-**Owns**: `include/*.h` 전체, `src/engine_lock.c` (concurrency layer)
+```
+[Browser / curl / REPL]
+        │ HTTP/1.1 (Connection: close)
+        ▼
+┌──────────────────────────────────────────────┐
+│  minisqld (단일 프로세스)                      │
+│                                                │
+│  server.c        accept loop + graceful       │
+│       │          shutdown (SIGINT)             │
+│       │ enqueue(fd)                            │
+│       ▼                                        │
+│  threadpool.c    동적 N=4~16 (+4 @ ≥80%)      │
+│       │                                        │
+│       ▼                                        │
+│  protocol.c      HTTP parse                   │
+│  router.c        method+path → handler        │
+│       │                                        │
+│       │   /api/dict ──► cache.c (LRU+rwlock)  │
+│       │                  │ hit  → JSON return │
+│       │                  │ miss               │
+│       ▼                  ▼                    │
+│  engine.c (engine_lock 경유, **cache 모름**)  │
+│       │                                        │
+│       ▼                                        │
+│  parser → executor → storage                  │
+│                  ├── bptree   (equality)      │
+│                  └── trie     (prefix, ASCII) │
+└──────────────────────────────────────────────┘
+```
 
-**Files**:
-- `include/server.h`, `threadpool.h`, `engine.h`, `protocol.h`, `router.h`
-- `src/engine_lock.c` — 테이블별 RW lock 등록/획득/해제 + catalog lock
-- `src/main.c` 확장 (CLI 옵션 파싱, 데몬 부팅)
-- `tests/test_engine_lock.c`
-- (bonus) `client/repl.c` — ANSI REPL 클라이언트
-
-**Responsibilities**:
-- MP0 에서 인터페이스 확정 + 팀 공유
-- MP4 이후 팀 PR 을 mix-merge
-- 통합 빌드 책임
-
----
-
-### 4-2. 동현 — engine.c thread-safe wrapping
-**Owns**: `src/engine.c`, W7 엔진 코드 수정 권한
-
-**Files**:
-- `src/engine.c` — `engine_init`, `engine_exec_sql`, `engine_shutdown`,
-  `engine_explain`, `engine_get_stats`
-- `src/storage.c`, `src/index_registry.c` (thread-safety 수정, 최소 변경)
-- `tests/test_engine_concurrent.c`
-
-**Responsibilities**:
-- W7 엔진의 글로벌 상태 (`s_meta`, `index_registry`, append FP cache) 를
-  engine_lock 하에서 안전하게 호출하도록 래핑
-- `mode=single` 토글 구현 (전역 mutex)
-- EXPLAIN 명령 구현 (인덱스 사용 여부, 노드 visit 수, lock wait ms)
-
-**주의**:
-- W7 엔진 로직 자체는 바꾸지 말 것. thread-safety 가 필요한 최소한의
-  수정만 하고, 가능하면 engine_lock 레이어에서 보호하는 방향
-- 모든 수정 후 W7 회귀 테스트 227 개 통과해야 함
+저장소는 **flat `src/*.c` 구조** 다. 신설 모듈 (`src/dict_cache.c` +
+`src/dict_cache.h`, `src/trie.c` + `include/trie.h`) 도 같은 컨벤션을
+따른다 (서브디렉토리 만들지 말 것). dict_cache 헤더는 도메인 특화 모듈이라
+`include/` 가 아닌 `src/` 안 private 헤더로 두어 router.c 만 include 한다.
 
 ---
 
-### 4-3. 용 형님 — network + HTTP + router + 정적 서빙 + 탭 (a)
-**Owns**: `src/server.c`, `src/protocol.c`, `src/router.c`, `web/concurrency.html` 탭 (a)
+## 4. 팀원 작업 영역
 
-**Files**:
-- `src/server.c` — socket 생성, bind, listen, accept loop, SIGINT graceful shutdown
-- `src/protocol.c` — HTTP request line + header + body 파싱, response 직렬화
-- `src/router.c` — method+path → handler 디스패치, 정적 파일 서빙 (`/`)
-- `tests/test_protocol.c` — HTTP 파서 단위 테스트
-- `web/concurrency.html` 의 탭 (a) Concurrent Stress 부분
-  - 슬라이더 (동시 요청 1~64), 버튼, 막대 그래프
-  - fetch() 로 `/api/query` 에 병렬 N 개 발사
-  - 싱글 모드 (`?mode=single`) vs 멀티 모드 비교
+각 모듈에는 **소유자**가 있다. 본인 담당 외 모듈을 건드릴 때는:
+1. 해당 담당자의 기존 파일을 먼저 읽고 컨벤션 (네이밍, 에러 처리,
+   주석 스타일, 락 획득 패턴) 확인
+2. 인터페이스 (`include/*.h`) 변경이 필요하면 수정 전에 PM 에게 확인
+3. 가능하면 PR 코멘트로 요청, 직접 수정은 마지막 수단
 
-**Responsibilities**:
-- HTTP 파서는 GET/POST + Content-Length + body 만 처리 (200 줄 내외)
-- 정적 파일 서빙은 Content-Type 매핑 (`.html`, `.js`, `.css`, `.svg`) 만
-- 탭 (a) 프론트는 바이브 코딩으로 Chart.js 또는 순수 HTML 막대 그래프
+> 정확한 zone 단위 매트릭스는 `TEAM_RULES.md § 10` 와
+> `docs/round2_integration_map.md` 가 단일 출처. 아래는 요약이며,
+> 충돌 시 위 두 문서가 우선.
 
----
+### 4-1. 지용 (PM) — 동적 쓰레드 풀 + 서버
+- **브랜치**: `feature/dynamic-threadpool`
+- **Owns**: `src/threadpool.c`, `include/threadpool.h` (API 추가),
+  `src/server.c` (graceful shutdown 연계), `src/main.c`,
+  `tests/test_threadpool.c`, `client/repl.c`
+- **참고할 컨벤션**: 1차 `src/threadpool.c`, `src/server.c`
 
-### 4-4. 승진 — threadpool + stats + 탭 (c)
-**Owns**: `src/threadpool.c`, `src/stats.c`, `web/concurrency.html` 탭 (c)
+### 4-2. 동현 — Router-level dict cache
+- **브랜치**: `feature/lru-cache`
+- **Owns**: `src/dict_cache.c` (신규), `src/dict_cache.h` (신규, private 헤더),
+  `src/router.c` 의 Zone R-DICT-CACHE / R-STATS / R-INIT,
+  `tests/test_dict_cache.c` (신규)
+- **건드리지 않음**: `src/engine.c` (cache pivot 으로 zone 소멸),
+  `src/server.c` (cache 라이프사이클은 router lazy init)
+- **참고할 컨벤션**: `src/router.c` (1차), `src/engine_lock.c` (rwlock 패턴)
 
-**Files**:
-- `src/threadpool.c` — job queue (mutex + condvar), N worker threads,
-  `threadpool_submit()`, `threadpool_shutdown()`
-- `src/stats.c` — atomic 카운터 (`total_queries`, `active_workers`,
-  `lock_wait_ns`, `qps_last_sec`)
-- `tests/test_threadpool.c` — 동시 enqueue 10K, shutdown 정상 종료 검증
-- `web/concurrency.html` 의 탭 (c) RW Contention 부분
-  - 좌측: SELECT 100 동시 발사 → 모두 병렬 처리 (빠름)
-  - 우측: INSERT 100 동시 발사 → 직렬화 (느림)
-  - 폴링: `/api/stats` 를 1초마다 fetch 해서 실시간 대시보드
+### 4-3. 용 — Trie + parser/executor prefix
+- **브랜치**: `feature/trie-prefix`
+- **Owns**: `src/trie.c` (신규), `include/trie.h` (신규),
+  `src/engine.c` 의 Zone T1 (prefix dispatcher) + IT (init/teardown),
+  `src/router.c` 의 Zone R-AUTO + R-ADMIN-INSERT,
+  `tests/test_trie.c` (신규)
+- **참고할 컨벤션**: `src/bptree.c` (인덱스 톤), `src/parser.c`
 
-**Responsibilities**:
-- threadpool 은 shutdown 시 drain 후 join 필수 (누수 방지)
-- stats 는 전부 `stdatomic.h` 의 `atomic_uint_fast64_t` 로
-- 탭 (c) 프론트는 탭 (a) 와 같은 `concurrency.html` 안에 탭 UI 로 구성.
-  용 형님과 **공통 JS 모듈** (fetch 헬퍼, 차트 헬퍼) 맞춰서 합치기
+### 4-4. 승진 — FE + API 응답 스키마
+- **Owns**: `web/concurrency.html` (재디자인), 자동완성 UI,
+  `/api/dict` / `/api/autocomplete` / `/api/stats` / `/api/admin/insert`
+  의 **응답 JSON 계약 결정권자**
+- **건드리지 않음**: 백엔드 핸들러 본체 (스키마만 합의 후 router 담당과 머지)
+- **참고할 컨벤션**: 1차 `web/concurrency.html` (탭 구조), `src/router.c`
+  (응답 직렬화 패턴)
 
----
-
-## 5. 의도된 Overlap (mix-merge 포인트)
-
-mix-merge 전제로 **일부러 겹치게** 설계한 지점. 같은 레이어를 두 명이
-다른 각도로 써본 걸 PM 이 mix 해서 품질 올림.
-
-| 지점 | 겹치는 두 사람 | 겹치는 이유 |
-|---|---|---|
-| Job 구조체 | 승진 (threadpool) ↔ 용 형님 (server) | fd 를 어떤 struct 로 넘길지. 둘 다 정의해보고 좋은 쪽 채택 |
-| Response write 책임 | 용 형님 (protocol) ↔ 승진 (stats JSON 직렬화) | JSON 생성 유틸을 누가 가질지 |
-| concurrency.html | 용 형님 (탭 a) ↔ 승진 (탭 c) | 공통 JS (fetch, chart) 는 하나로 머지 |
-
-**PM 은 각자 PR 에서 좋은 쪽을 선택**해서 mix. 본인 원본이 안 채택돼도
-서운해하지 말 것. 이게 이 라운드의 운영 방식.
+> W7 엔진 코드 (`parser.c`, `executor.c`, `storage.c`, `bptree.c`)
+> 직접 수정 권한은 동현 (engine 담당). 용 의 trie 작업이 parser/executor
+> 분기를 건드릴 때는 동현 사전 합의 필수.
 
 ---
 
-## 6. 마일스톤
+## 5. 에이전트 작업 시 주의사항
 
-| MP | 시각 | 내용 | 책임 |
+### 5-1. 공유 자료구조 접근 규칙
+- **모든 cross-thread 공유 자료구조는 `pthread_rwlock_t` 로 보호.**
+  read-heavy 면 mutex 가 아니라 rwlock 으로 시작
+- read-only 경로는 반드시 `pthread_rwlock_rdlock`, write 경로만 `wrlock`
+- 락 보유 중 syscall / malloc 최소화. 가능하면 lock 밖에서 준비 후 swap-in
+- **락 획득 순서 (절대 어기지 말 것)**: catalog → table → cache
+  - 역순으로 잡는 코드는 PR 리젝트
+- 락 해제는 `goto cleanup` 단일 출구 패턴 권장 (early return 금지)
+
+### 5-2. Dict Cache 위치 / 호출 경계 ⚠
+- **`dict_cache_*` 호출은 `src/router.c` 의 `/api/dict` 핸들러 안에서만.**
+- ❌ `src/engine.c` 에서 `dict_cache_*` 호출 금지 (엔진 핵심 경로 무오염)
+- ❌ `src/server.c` 에서 cache 라이프사이클 훅 직접 추가 금지
+  → `pthread_once` lazy init 또는 router.c 파일 scope static 으로 처리
+- **cache miss 후 DB 조회는 cache lock 밖에서 수행.** 같은 단어 동시 miss
+  시 중복 DB 조회 발생 가능하나 결과 정합성 문제 X — 허용 trade-off
+- `/api/admin/insert` 성공 경로에서는 반드시
+  `dict_cache_invalidate("english:" + english)` 호출 (write 후 stale 응답 방지)
+- 캐시 hit 으로 응답한 경우에도 stats 카운터 (`dict_cache_hits()`) 는 증가
+  (응답 JSON 키는 `cache_hit`/`cache_hits` 짧은 형태 유지)
+
+### 5-3. threadpool worker 금지 사항
+- **워커 안에서 blocking I/O 금지**: `sleep`, `usleep`, fsync 루프,
+  외부 프로세스 wait, DNS resolve 등
+  - 클라이언트 socket read/write 는 예외 (job 자체임)
+- **워커 안에서 다른 워커에 submit 금지** (큐 full 시 self-deadlock)
+- 긴 작업은 timeout 으로 끊고 클라이언트에 503 응답
+- 워커 죽으면 풀 전체 죽음. 절대 `pthread_exit` 직접 호출 금지
+
+### 5-4. Trie 와 B+Tree 일관성
+- INSERT 는 두 인덱스 모두 갱신. 둘 다 성공해야 commit
+- 한쪽만 갱신된 채로 리턴하는 경로 금지 (rollback or fail-fast)
+- DELETE 도 동일
+- Trie 입력 검증은 router 핸들러에서 (non-ASCII / 대문자 / 기호 → 400).
+  trie 내부 자체는 a-z 가정으로 단순화
+
+### 5-5. 동적 쓰레드 풀 변경 시
+- 워커 수 변경 결정은 모니터 쓰레드만. 워커가 자기 자신을 spawn 금지
+- 워커 추가는 atomic 카운터 증가 후 `pthread_create`. 실패 시 롤백
+- 16 상한은 `#define` 한 곳에서만 관리
+
+### 5-6. 인터페이스 / 빌드
+- `include/*.h` 기존 시그니처는 PM 승인 없이 변경 금지
+  (단, **신규 헤더** `src/dict_cache.h` (private), `include/trie.h` 는
+  해당 담당자가 생성 OK)
+- 외부 라이브러리 추가 금지 (pthread 만 허용)
+- 함수 시그니처 등 구현 디테일은 본 문서에 적지 말고 `CLAUDE.md` 참조
+- 커밋 전 `make` 경고 0, `make test` 통과, 동시성 코드면 `make tsan` 통과
+
+---
+
+## 6. 테스트 / 벤치마크 시나리오 — 영한 사전
+
+### 6-1. 데이터셋
+- 테이블: `dictionary (english VARCHAR, korean VARCHAR)`
+- 인덱스: `english` 컬럼 (B+Tree equality + Trie prefix). `korean` 은 인덱스 없음
+- 규모: ~10만 entries (시드 fixture 는 `scripts/` 에 추가 예정)
+
+### 6-2. 부하 패턴
+| 시나리오 | 엔드포인트 | 동시 | 목적 |
 |---|---|---|---|
-| MP0 | 10:30~ | PM 선작업: include 헤더 5 개 + Makefile + 문서 4 개 커밋 | 지용 |
-| MP1 | PM 끝난 후 | 팀원 각자 브랜치 체크아웃 + 스켈레톤 커밋 | 전원 |
-| MP2 | +90분 | 각자 1차 구현 (mock 기반) | 전원 |
-| 점심 | | | |
-| MP3 | +90분 | 2차 구현 + 단위 테스트 | 전원 |
-| MP4 | +60분 | 1차 PR 제출, PM mix-merge 시작 | 전원 + PM |
-| MP5 | +60분 | 통합 빌드 + 데모 페이지 연결 + `make tsan` 회귀 | PM 주도 |
-| MP6 | +30분 | README 갱신, 발표 리허설 | 전원 |
+| 정상 | `/api/dict?english=*` 95% + `/api/admin/insert` 5% | 50 | dict cache hit rate, p95 latency |
+| Read 스파이크 | `/api/dict?english=apple` 100% | 200 | 동적 풀 4→16 확장 + 캐시 hit 효과 |
+| id 조회 | `/api/dict?id=N` 100% | 50 | id 키 prefix 정확 동작 확인 |
+| 운영자 INSERT | `/api/admin/insert` 1 req/s + 위 부하 | + | rwlock write 가 read 차단도, invalidate 정확성 |
+| 자동완성 | `/api/autocomplete?prefix=ap` 100% | 50 | trie 경로 latency, 캐시 미적용 확인 |
+| 역방향 | `/api/dict?korean=사과` 100% | 20 | 인덱스 없는 선형 스캔 + dict cache 미적용 baseline |
+
+### 6-3. 검증 항목
+- p50 / p95 / p99 latency, QPS
+- dict cache hit rate (정상 시나리오 ≥ 80% 목표)
+- 워커 수 시계열 (스파이크 4 → 16 도달까지 시간)
+- `/api/admin/insert` 직후 동일 단어 조회 시 stale 응답 없음 (invalidate 검증)
+- prefix 쿼리: trie 노드 visit 수, suggestion latency
+- `mode=single` 대비 throughput 비율 (발표 임팩트 수치)
+
+### 6-4. 회귀
+- W7 회귀 227 개는 어떤 변경 후에도 통과해야 함
+- 신규 `test_dict_cache.c`, `test_trie.c` 는 각 PR 에 동봉
+- 동시성 변경 PR 은 `make tsan` 통과 필수
+
+---
+
+## 7. 발표 시나리오 (4 분, 영한 사전)
+
+```
+0:00 ─ 0:30   문제: 사전 검색 폭주 + 운영자 단어 추가가 동시에 발생
+0:30 ─ 1:00   아키텍처 한 장: 동적 풀 + router dict cache + rwlock + trie
+1:00 ─ 1:45   데모: read 200 동시 발사 → 워커 4 → 16 자동 확장 시계열
+1:45 ─ 2:30   데모: 동일 단어 반복 조회 → cache hit rate 상승 (대시보드)
+2:30 ─ 3:15   데모: 자동완성 (`/api/autocomplete?prefix=ap`) 5 개 suggestion
+3:15 ─ 3:45   데모: 운영자 INSERT 직후 invalidate 검증 (stale 없음)
+3:45 ─ 4:00   수치: cache hit rate, mode=single 대비 throughput N×
+```
 
 발표: **목요일 오전**, 4 분 데모 + 1 분 QnA.
 
 ---
 
-## 7. 발표 시나리오 (4 분)
-0:00 ─ 0:30   문제: W7 의 subprocess 한계, 1.8s rebuild 고정비
-0:30 ─ 1:00   아키텍처 한 장: 단일 C 데몬, thread pool, RW lock
-1:00 ─ 2:00   데모 (a) Concurrent Stress: 싱글 vs 멀티 비교 (수치 임팩트)
-2:00 ─ 3:00   데모 (c) RW Contention: read 동시 vs write 직렬
-3:00 ─ 3:30   /api/stats 대시보드: 운영 감각
-3:30 ─ 4:00   마무리: make bench 1842× → SQL end-to-end 도 N×
+## 8. 금지 사항
+
+- `include/*.h` 기존 헤더 PM 승인 없이 수정 (신규 `src/dict_cache.h` private,
+  `include/trie.h` 는 OK)
+- 외부 HTTP / JSON 라이브러리 추가 (pthread 만 허용)
+- W7 엔진 코드 (`parser.c`, `executor.c`, `storage.c`, `bptree.c`) 를
+  동현 외 다른 사람이 수정 (용 의 trie 분기는 사전 합의 후 zone 한정)
+- W7 회귀 테스트 227 개 깨지는 PR 머지
+- `prev_project/`, `agent/` 수정 (아카이브 영역)
+- **`src/engine.c` 에서 `dict_cache_*` 호출 — dict cache 는 router 의
+  `/api/dict` 핸들러 안에만 존재** (2026-04-22 회의 결정)
+- **`src/server.c` 에서 dict cache 라이프사이클 훅 추가** — router lazy
+  init 사용
+- threadpool 워커 안에서 blocking syscall 호출
+- Trie 와 B+Tree 둘 중 하나만 갱신하는 INSERT / DELETE
+- 락 획득 순서 위반 (catalog → table → cache 외)
+- force push (`--force`). 필요 시 `--force-with-lease`
 
 ---
 
-## 8. 금지 사항
-
-- `include/*.h` PM 승인 없이 수정
-- 외부 HTTP/JSON 라이브러리 추가 (pthread 만 허용)
-- W7 엔진 코드(`parser.c`, `executor.c`, `storage.c`, `bptree.c`) 수정 —
-  동현만 권한 있음
-- W7 회귀 테스트 227 개 깨지는 PR 머지
-- `prev_project/`, `agent/` 수정 (아카이브 영역)
+_2026-04-22 회의 결정 (cache pivot, 영한 방향) 반영. 1차 라운드 히스토리는
+`w8_handoff.md`, 함수 시그니처 / 자료구조 디테일은 `CLAUDE.md`, zone 단위
+교차 수정 매트릭스는 `TEAM_RULES.md § 10` 와 `docs/round2_integration_map.md` 참조._

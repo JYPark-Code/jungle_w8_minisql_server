@@ -97,7 +97,7 @@ per-owner branches; the scope is frozen and listed under
 | Socket | `src/server.c` | `accept()` on main thread; `fd` handed to pool |
 | Thread pool | `src/threadpool.c` | mutex + condvar queue; dynamic resize (R2) |
 | HTTP | `src/protocol.c`, `src/router.c` | stateless per worker |
-| Router + Dict Cache | `src/router.c`, `src/cache.c` (R2) | LRU under a single rwlock; router itself is stateless per worker |
+| Router + Dict Cache | `src/router.c`, `src/dict_cache.c` (R2) | LRU under a single rwlock (or mutex); router itself is stateless per worker. DB lookup on cache miss runs outside the cache lock |
 | Engine | `src/engine.c`, `src/engine_lock.c` | per-table RW lock + catalog lock + single-mode mutex |
 | Index | `src/bptree.c`, `src/trie.c` (R2, ASCII English only) | read-side locked via engine layer; reverse Korean lookup falls back to linear scan |
 | Storage | `src/storage.c` (W7) | engine layer serializes writes |
@@ -114,9 +114,11 @@ flagged `TBD` until the four teams confirm signatures.
 word, receive the Korean meaning. Round 2's three features are exercised
 on the same data set:
 
-1. **Concurrent lookup (`/api/dict?word=apple`).** Many users
+1. **Concurrent lookup (`/api/dict?english=apple`).** Many users
    simultaneously look up Korean meanings for English words. The
-   router-level dict cache absorbs repeated lookups.
+   router-level dict cache absorbs repeated lookups (key prefix
+   `english:<word>`). The id variant (`?id=N`) takes the same path
+   with key prefix `id:<N>`.
 2. **Operator insert (`/api/admin/insert`).** An admin adds a new
    english/korean pair. Exercises table write-lock serialization + dict
    cache invalidation for the english key.
@@ -203,8 +205,9 @@ Round 2 will add:
 
 | Method | Path | Description |
 |---|---|---|
-| `GET` | `/api/dict?word=<english>` | English-to-Korean lookup (primary). Dict-cache hit path; on miss goes through the engine. |
-| `GET` | `/api/dict?korean=<korean>` | Reverse lookup (option B). Unindexed linear scan; functional but slow. |
+| `GET` | `/api/dict?english=<english>` | English-to-Korean lookup (primary). Dict-cache hit path (key `english:<word>`); on miss goes through the engine. |
+| `GET` | `/api/dict?id=<N>` | Lookup by id (optional). Dict-cache hit path (key `id:<N>`). |
+| `GET` | `/api/dict?korean=<korean>` | Reverse lookup (option B). Unindexed linear scan; functional but slow. Dict cache is bypassed for this path. |
 | `GET` | `/api/autocomplete?prefix=<english>` | Trie prefix query (ASCII lowercase English only, length-capped) |
 | `POST` | `/api/admin/insert` | Insert a new `english`/`korean` pair; invalidates the dict-cache entry for that english key |
 

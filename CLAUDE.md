@@ -169,26 +169,34 @@ Round 1 (1차 mix-merge 머지 완료) 위에 얹는 4 개 항목. 각 항목은
   `/api/dict` 라는 1 개 엔드포인트로 **명확히 제한** 되므로, 범용 query
   cache 보다 훨씬 단순하게 구현 가능
 - **(b) 설계**:
-  - 위치: `src/cache.c` (신규) 의 generic LRU + `src/router.c` 의
-    `/api/dict` 핸들러 안에서만 호출
+  - 위치: `src/dict_cache.c` (신규) + `src/dict_cache.h` (신규, **src/ 안
+    private 헤더** — router.c 만 include). `src/router.c` 의 `/api/dict`
+    핸들러 안에서만 호출
   - 자료구조: hashmap + doubly linked list (표준 LRU), capacity 고정
-  - 동시성: 1 개 `pthread_rwlock_t` 로 전체 캐시 보호 —
+  - 동시성: 1 개 `pthread_rwlock_t` (또는 mutex) 로 lookup/insert 구간 보호 —
     get 은 rdlock, put / invalidate 는 wrlock
+  - **cache miss 후 DB 조회는 cache lock 밖에서** 수행 → 전체 캐시가 오래
+    잠기지 않음. 같은 단어가 동시에 miss 되면 중복 DB 조회 발생 가능하지만
+    결과 정합성 문제 아님 — 허용 가능한 trade-off (동현 회의 결정)
   - 일관성 정책: **invalidate-on-write** 채택 (회의 확정)
-    - `/api/admin/insert` 성공 시 해당 english key invalidate
-    - 보수적 fallback: `cache_invalidate_all()` 도 허용
-  - key 체계: 영한 방향은 `english` 단어 원본 (normalize 불필요), 역방향
-    은 `"ko:" + korean_word` 프리픽스로 분리 (캐시 적용 선택)
+    - `/api/admin/insert` 성공 시 해당 `english:<word>` key invalidate
+    - 보수적 fallback: `dict_cache_invalidate_all()` 도 허용
+  - key 체계: prefix 분리로 검색 종류별 구분
+    - `english:<word>` — 영한 primary (예: `english:apple`)
+    - `id:<N>` — id 조회 옵션 (예: `id:1`)
+    - 역방향 `?korean=` 은 **dict cache 미적용** (engine 직행, 선형 스캔)
   - 크기 초기값: 1024 entry (측정 후 재조정)
   - 초기화: `pthread_once` lazy init 또는 `router.c` 파일 scope static.
     server.c 경유 금지 (TEAM_RULES §10-3 참조)
 - **(c) 영향 범위**:
-  - 필수: `src/cache.c` (신규), `include/cache.h` (신규),
+  - 필수: `src/dict_cache.c` (신규), `src/dict_cache.h` (신규, private 헤더),
     `src/router.c` (Zone R-DICT-CACHE / R-STATS / R-INIT),
-    `tests/test_cache.c`
+    `tests/test_dict_cache.c`
   - **엔진 핵심 경로 (`src/engine.c`) 는 건드리지 않음** — 초안에서
     변경됨
   - 연쇄: `/api/stats` 응답에 `cache_hits` / `cache_misses` 카운터 추가
+    (응답 JSON 키는 사용자 facing 이라 `cache_hit` / `cache_hits` /
+    `cache_misses` 짧은 형태 유지. 내부 C 심볼만 `dict_cache_*`)
 
 ### (3) Trie 기반 prefix search (ASCII 영어 only)
 
@@ -263,7 +271,7 @@ Round 2 완료 이후 기준:
 │  /api/autocomplete ──► engine → Trie      │  │
 │  /api/admin/insert ──► engine → Storage   │  │
 │                            (on INSERT)    │  │
-│                            cache_invalidate◀─┘  │
+│                       dict_cache_invalidate◀─┘  │
 └──────┬───────────────────────────────────────┘
        ▼
 ┌───────────────────────────────┐
@@ -288,7 +296,7 @@ engine 핵심 경로 (parse → execute → storage) 는 캐시를 모른다.
 | Socket | `src/server.c` | `accept()` 메인 스레드, fd 를 pool 로 전달 |
 | Thread pool | `src/threadpool.c` | mutex + condvar queue, **동적 resize** (R2) |
 | HTTP | `src/protocol.c` | 워커당 stateless |
-| **Router + Dict Cache** | `src/router.c`, `src/cache.c` (R2) | LRU 는 **단일 rwlock**, router 자체는 worker 당 stateless |
+| **Router + Dict Cache** | `src/router.c`, `src/dict_cache.c` (R2) | LRU 는 **단일 rwlock** (또는 mutex), router 자체는 worker 당 stateless. cache miss 후 DB 조회는 lock 밖에서 수행 |
 | Engine | `src/engine.c`, `src/engine_lock.c` | 테이블 RW + catalog + single-mode |
 | Index | `src/bptree.c`, `src/trie.c` (R2, ASCII only) | engine 레이어 락 하에서 read |
 | Storage | `src/storage.c` (W7) | engine 레이어가 write 직렬화. 한글 body 역방향 조회는 여기서 선형 스캔 |
@@ -329,45 +337,51 @@ int     trie_search_prefix(const trie_t *t, const char *prefix,
 #endif
 ```
 
-### (b) Cache ↔ Router (`/api/dict` handler)
+### (b) Dict Cache ↔ Router (`/api/dict` handler)
 
 > 초안에서는 consumer 가 Query Executor (engine.c) 였으나, 2026-04-22
-> 설계 변경으로 **Router** 가 유일한 소비자. 시그니처 자체는 초안과 동일.
+> 설계 변경으로 **Router** 가 유일한 소비자. 추가로 동현 제안에 따라
+> 모듈명을 `cache` → `dict_cache` 로 도메인 명시화하고, 헤더를 `include/`
+> 가 아닌 `src/` 안 private 헤더로 두어 router.c 만 include 하도록 좁힘.
 
 ```c
-/* include/cache.h — TBD — 팀 합의 필요 (담당: 동현) */
-#ifndef CACHE_H
-#define CACHE_H
+/* src/dict_cache.h — TBD — 팀 합의 필요 (담당: 동현)
+ * 도메인 특화 모듈이라 include/ 가 아닌 src/ 안 private 헤더. router.c 만 include. */
+#ifndef DICT_CACHE_H
+#define DICT_CACHE_H
 
 #include <stddef.h>
 #include <stdbool.h>
 
-typedef struct cache cache_t;
+typedef struct dict_cache dict_cache_t;
 
-cache_t *cache_create(int capacity);
-void     cache_destroy(cache_t *c);
+dict_cache_t *dict_cache_create(int capacity);
+void          dict_cache_destroy(dict_cache_t *c);
 
-/* rwlock 은 내부에서 처리. out_json 은 성공 시 heap (호출자 free). */
-bool     cache_get(cache_t *c, const char *key,
-                   char **out_json, size_t *out_len);
+/* lookup. rwlock 은 내부에서 처리. out_json 은 성공 시 heap (호출자 free).
+ * key 체계: "english:<word>" (영한 primary) 또는 "id:<N>" (id 조회). */
+bool          dict_cache_get(dict_cache_t *c, const char *key,
+                             char **out_json, size_t *out_len);
 
-/* json 내용을 내부 복사. 기존 key 가 있으면 교체. */
-int      cache_put(cache_t *c, const char *key,
-                   const char *json, size_t len);
+/* insert. json 내용을 내부 복사. 기존 key 가 있으면 교체.
+ * cache miss 후 DB 조회는 cache lock 밖에서 수행한 결과를 본 함수로 저장. */
+int           dict_cache_put(dict_cache_t *c, const char *key,
+                             const char *json, size_t len);
 
 /* /api/admin/insert 성공 경로에서 호출. */
-void     cache_invalidate(cache_t *c, const char *key);
-void     cache_invalidate_all(cache_t *c);
+void          dict_cache_invalidate(dict_cache_t *c, const char *key);
+void          dict_cache_invalidate_all(dict_cache_t *c);
 
-/* 모니터링 (락 없이 atomic 읽기) */
-unsigned long cache_hits(const cache_t *c);
-unsigned long cache_misses(const cache_t *c);
+/* 모니터링 (락 없이 atomic 읽기). 응답 JSON 키로 그대로 노출. */
+unsigned long dict_cache_hits(const dict_cache_t *c);
+unsigned long dict_cache_misses(const dict_cache_t *c);
 
 #endif
 ```
 
-호출 위치는 `src/router.c` 의 `/api/dict` 핸들러 안에만. engine.c / server.c
-에서 cache_* 를 호출하는 것은 **금지** (TEAM_RULES §10-3 설계 경계 참조).
+호출 위치는 `src/router.c` 의 `/api/dict` 핸들러 안에만. `src/engine.c` /
+`src/server.c` 에서 `dict_cache_*` 를 호출하는 것은 **금지** (TEAM_RULES
+§10-3 설계 경계 참조).
 
 ### (c) Thread Pool ↔ Server
 
@@ -393,13 +407,18 @@ Round 2 신규 엔드포인트. 모든 응답은 `Content-Type: application/json
 → 영어) 은 선형 스캔으로 동작은 하되 느림 ("option B").
 
 ```
-GET  /api/dict?word=<english>
-     → 영한 조회 (primary). dict cache 체크 후 miss 면 engine 경유.
+GET  /api/dict?english=<english>
+     → 영한 조회 (primary). dict cache key = "english:<english>".
+     → cache hit 이면 engine 미경유, miss 면 engine SELECT 후 dict_cache_put.
      → { "ok": true, "rows": [...], "elapsed_ms": N, "cache_hit": bool }
      → 404  { "ok": false, "error": "not_found" }
 
+GET  /api/dict?id=<N>
+     → id 조회 (옵션). dict cache key = "id:<N>". 동작은 ?english 와 동일.
+     → { "ok": true, "rows": [...], "elapsed_ms": N, "cache_hit": bool }
+
 GET  /api/dict?korean=<ko>
-     → 역방향 (한글 body → 영어). 인덱스 없음, 선형 스캔. 느릴 수 있음.
+     → 역방향 (한글 body → 영어). 인덱스 없음, 선형 스캔. **dict cache 미적용**.
      → { "ok": true, "rows": [...], "elapsed_ms": N }
 
 GET  /api/autocomplete?prefix=<p>&limit=<N>
@@ -410,18 +429,19 @@ GET  /api/autocomplete?prefix=<p>&limit=<N>
 POST /api/admin/insert
      Content-Type: application/json
      Body: { "english": "apple", "korean": "사과" }
-     → dictionary 테이블에 INSERT + trie 업데이트 + cache invalidate.
+     → dictionary 테이블에 INSERT + trie 업데이트 + dict_cache_invalidate.
      → { "ok": true, "row_id": N, "elapsed_ms": N }
      → 400  { "ok": false, "error": "invalid_body" }
 ```
 
 - 모든 엔드포인트는 `engine_lock` 경유로 동시성 보호
-- `/api/dict` 의 영한 방향만 **dict cache** 를 경유 (miss 시 engine 호출).
-  역방향은 캐시 적용 여부 구현자 선택
+- `/api/dict?english=` 와 `?id=` 만 **dict cache** 경유 (miss 시 engine 호출).
+  `?korean=` 역방향은 dict cache 미적용 (engine 직행, 선형 스캔)
 - `/api/autocomplete` 는 trie 직접 조회 — 캐시 미적용 (prefix 조합이 많아
   hit rate 낮음)
-- `/api/admin/insert` 는 테이블 wrlock + 성공 시 `cache_invalidate(english)`
-  호출
+- `/api/admin/insert` 는 테이블 wrlock + 성공 시
+  `dict_cache_invalidate("english:" + english)` 호출 (보수적 fallback:
+  `dict_cache_invalidate_all()`)
 - `/api/inject` (Round 1 placeholder) 는 Round 2 에서 완성 — 더미 주입
   용도, `/api/admin/insert` 와 유사 경로
 
