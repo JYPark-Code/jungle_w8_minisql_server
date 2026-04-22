@@ -367,8 +367,9 @@
   const QUERY_TIMEOUT_MS = 8000;
   const STATS_TIMEOUT_MS = 3000;
   const AUTOCOMPLETE_DEBOUNCE_MS = 150;
-  /* 용 2차 PR 머지 후 true 로 전환. 이 때 MOCK_WORDS 블록은 제거 가능. */
-  const USE_REAL_AUTOCOMPLETE = false;
+  /* PR #19 (trie router endpoint) + PR #22 (warming_up gate) 머지 완료 →
+   * real endpoint 활성화. 실패 시 autocomplete 숨김. */
+  const USE_REAL_AUTOCOMPLETE = true;
 
   /* ── UI refs ──────────────────────────────────────────── */
   const searchInput = document.getElementById("searchInput");
