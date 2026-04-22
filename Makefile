@@ -45,6 +45,7 @@ W8_SRCS  = $(SRC_DIR)/main.c \
            $(SRC_DIR)/server.c \
            $(SRC_DIR)/protocol.c \
            $(SRC_DIR)/router.c \
+           $(SRC_DIR)/dict_cache.c \
            $(SRC_DIR)/engine.c \
            $(SRC_DIR)/engine_lock.c \
            $(SRC_DIR)/threadpool.c
@@ -82,7 +83,7 @@ REPL_SRCS   = $(CLIENT_DIR)/repl.c
 # ---------------------------------------------------------------------------
 .PHONY: all clean test tsan valgrind bench loadtest repl \
         test_storage_all \
-        test_bptree test_benchmark test_index_registry test_engine_lock test_threadpool
+        test_bptree test_benchmark test_index_registry test_engine_lock test_threadpool test_dict_cache
 
 # ---------------------------------------------------------------------------
 # 기본 빌드 — 데몬
@@ -105,7 +106,7 @@ $(DAEMON_TSAN): $(DAEMON_SRCS)
 # ---------------------------------------------------------------------------
 # 회귀 테스트 (W7 + 추후 W8)
 # ---------------------------------------------------------------------------
-test: $(TEST_PARSER_EXEC) test_storage_all test_bptree test_benchmark test_index_registry test_engine_lock test_threadpool
+test: $(TEST_PARSER_EXEC) test_storage_all test_bptree test_benchmark test_index_registry test_engine_lock test_threadpool test_dict_cache
 	./$(TEST_PARSER_EXEC)
 
 $(TEST_PARSER_EXEC): $(TEST_PARSER_EXEC_SRCS)
@@ -149,10 +150,14 @@ test_threadpool: $(TEST_DIR)/test_threadpool.c $(THREADPOOL_TEST_DEPS)
 	$(CC) $(CFLAGS) -o $@ $^ $(LDFLAGS)
 	./$@
 
+test_dict_cache: $(TEST_DIR)/test_dict_cache.c $(SRC_DIR)/dict_cache.c
+	$(CC) $(CFLAGS) -o $@ $^ $(LDFLAGS)
+	./$@
+
 # ---------------------------------------------------------------------------
 # valgrind — W7 테스트 바이너리 회귀 (데몬은 상주형이라 미포함)
 # ---------------------------------------------------------------------------
-valgrind: $(TEST_PARSER_EXEC) $(STORAGE_TEST_TARGETS) test_bptree test_benchmark test_index_registry test_engine_lock test_threadpool
+valgrind: $(TEST_PARSER_EXEC) $(STORAGE_TEST_TARGETS) test_bptree test_benchmark test_index_registry test_engine_lock test_threadpool test_dict_cache
 	@echo "=== valgrind: parser/executor ==="
 	valgrind --leak-check=full --error-exitcode=1 --quiet ./$(TEST_PARSER_EXEC)
 	@echo "=== valgrind: storage_insert ==="
@@ -163,6 +168,8 @@ valgrind: $(TEST_PARSER_EXEC) $(STORAGE_TEST_TARGETS) test_bptree test_benchmark
 	valgrind --leak-check=full --error-exitcode=1 --quiet ./test_engine_lock
 	@echo "=== valgrind: threadpool ==="
 	valgrind --leak-check=full --error-exitcode=1 --quiet ./test_threadpool
+	@echo "=== valgrind: dict_cache ==="
+	valgrind --leak-check=full --error-exitcode=1 --quiet ./test_dict_cache
 
 # ---------------------------------------------------------------------------
 # B+Tree pure 벤치 (W7 자산)
@@ -195,7 +202,7 @@ loadtest:
 clean:
 	rm -f $(DAEMON) $(DAEMON_TSAN) \
 	      $(TEST_PARSER_EXEC) $(STORAGE_TEST_TARGETS) \
-	      test_bptree test_benchmark test_index_registry test_engine_lock test_threadpool \
+	      test_bptree test_benchmark test_index_registry test_engine_lock test_threadpool test_dict_cache \
 	      $(BENCH_TARGET) tree_shape $(REPL_TARGET)
 	rm -rf data/*.csv data/*.schema
 	rm -rf data/schema data/tables

@@ -1,17 +1,29 @@
 #include "engine.h"
+#include "dict_cache.h"
 #include "router.h"
 #include "protocol.h"
 
+#include <ctype.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 #include <sys/stat.h>
 
+#define DICT_CACHE_CAPACITY 1024
+
 static char s_web_root[512] = "./web";
+static dict_cache_t *s_dict_cache;
 
 void router_set_web_root(const char *web_root) {
     if (!web_root || web_root[0] == '\0') return;
     snprintf(s_web_root, sizeof(s_web_root), "%s", web_root);
+}
+
+static dict_cache_t *router_dict_cache(void) {
+    if (s_dict_cache == NULL) {
+        s_dict_cache = dict_cache_create(DICT_CACHE_CAPACITY);
+    }
+    return s_dict_cache;
 }
 
 static int method_is(const http_request_t *req, const char *method) {
@@ -111,6 +123,194 @@ static int set_jsonf(http_response_t *resp, int status, const char *fmt,
                         "{\"ok\":false,\"error\":\"response_too_large\"}");
     }
     return set_body(resp, status, "application/json", body);
+}
+
+static int set_cached_body(http_response_t *resp, char *body) {
+    if (resp == NULL || body == NULL) return -1;
+    resp->status = 200;
+    resp->content_type = "application/json";
+    resp->body = body;
+    resp->body_len = strlen(body);
+    return 0;
+}
+
+static void append_json_escaped(char *out, size_t out_size, size_t *offset,
+                                const char *text) {
+    const unsigned char *p = (const unsigned char *)text;
+
+    if (out == NULL || out_size == 0 || offset == NULL) return;
+    while (p != NULL && *p != '\0' && *offset + 1U < out_size) {
+        unsigned char ch = *p++;
+        if ((ch == '"' || ch == '\\') && *offset + 2U < out_size) {
+            out[(*offset)++] = '\\';
+            out[(*offset)++] = (char)ch;
+        } else if (ch == '\n' && *offset + 2U < out_size) {
+            out[(*offset)++] = '\\';
+            out[(*offset)++] = 'n';
+        } else if (ch == '\r' && *offset + 2U < out_size) {
+            out[(*offset)++] = '\\';
+            out[(*offset)++] = 'r';
+        } else if (ch == '\t' && *offset + 2U < out_size) {
+            out[(*offset)++] = '\\';
+            out[(*offset)++] = 't';
+        } else if (ch >= 0x20U) {
+            out[(*offset)++] = (char)ch;
+        }
+    }
+    out[*offset] = '\0';
+}
+
+static int sql_escape_literal(const char *src, char *dst, size_t dst_size) {
+    size_t out = 0;
+
+    if (src == NULL || dst == NULL || dst_size == 0) return -1;
+    while (*src != '\0') {
+        if (*src == '\'') {
+            if (out + 2U >= dst_size) return -1;
+            dst[out++] = '\'';
+            dst[out++] = '\'';
+        } else {
+            if (out + 1U >= dst_size) return -1;
+            dst[out++] = *src;
+        }
+        src++;
+    }
+    dst[out] = '\0';
+    return 0;
+}
+
+static int is_positive_int_text(const char *text) {
+    if (text == NULL || text[0] == '\0') return 0;
+    while (*text != '\0') {
+        if (!isdigit((unsigned char)*text)) return 0;
+        text++;
+    }
+    return 1;
+}
+
+static int wrap_dict_response(int ok, const char *mode, const char *query, int cache_hit,
+                              const char *engine_json, char **out_json) {
+    const char *prefix = "{\"ok\":";
+    char query_buf[512];
+    size_t query_off = 0;
+    size_t needed;
+    char *json;
+
+    if (mode == NULL || query == NULL || engine_json == NULL || out_json == NULL) return -1;
+    *out_json = NULL;
+    query_buf[0] = '\0';
+    append_json_escaped(query_buf, sizeof(query_buf), &query_off, query);
+
+    needed = strlen(prefix) + strlen(ok ? "true" : "false") +
+             strlen(",\"cache_hit\":") + strlen(cache_hit ? "true" : "false") +
+             strlen(",\"mode\":\"") + strlen(mode) +
+             strlen("\",\"query\":\"") + strlen(query_buf) +
+             strlen("\",\"engine\":") + strlen(engine_json) +
+             strlen("}") + 1U;
+
+    json = malloc(needed);
+    if (json == NULL) return -1;
+    snprintf(json, needed,
+             "%s%s,\"cache_hit\":%s,\"mode\":\"%s\",\"query\":\"%s\",\"engine\":%s}",
+             prefix, ok ? "true" : "false", cache_hit ? "true" : "false",
+             mode, query_buf, engine_json);
+    *out_json = json;
+    return 0;
+}
+
+static int handle_dict_request(const http_request_t *req, http_response_t *resp) {
+    dict_cache_t *cache;
+    char english[256];
+    char korean[256];
+    char id[64];
+    char escaped[512];
+    char key[320];
+    char sql[768];
+    char *cached_json = NULL;
+    char *response_json = NULL;
+    engine_result_t result;
+    const char *mode;
+    const char *query;
+
+    if (!method_is(req, "GET")) {
+        return set_body(resp, 405, "application/json",
+                        "{\"ok\":false,\"error\":\"method_not_allowed\"}");
+    }
+
+    cache = router_dict_cache();
+    if (cache == NULL) {
+        return set_body(resp, 500, "application/json",
+                        "{\"ok\":false,\"error\":\"cache_unavailable\"}");
+    }
+
+    if (query_param(req->query, "english", english, sizeof(english)) == 0 &&
+        english[0] != '\0') {
+        if (sql_escape_literal(english, escaped, sizeof(escaped)) != 0 ||
+            snprintf(key, sizeof(key), "english:%s", english) >= (int)sizeof(key) ||
+            snprintf(sql, sizeof(sql),
+                     "SELECT korean FROM dictionary WHERE english = '%s';",
+                     escaped) >= (int)sizeof(sql)) {
+            return set_body(resp, 400, "application/json",
+                            "{\"ok\":false,\"error\":\"query_too_long\"}");
+        }
+        mode = "english";
+        query = english;
+    } else if (query_param(req->query, "id", id, sizeof(id)) == 0 &&
+               id[0] != '\0') {
+        if (!is_positive_int_text(id) ||
+            snprintf(key, sizeof(key), "id:%s", id) >= (int)sizeof(key) ||
+            snprintf(sql, sizeof(sql),
+                     "SELECT english, korean FROM dictionary WHERE id = %s;",
+                     id) >= (int)sizeof(sql)) {
+            return set_body(resp, 400, "application/json",
+                            "{\"ok\":false,\"error\":\"invalid_id\"}");
+        }
+        mode = "id";
+        query = id;
+    } else if (query_param(req->query, "korean", korean, sizeof(korean)) == 0 &&
+               korean[0] != '\0') {
+        if (sql_escape_literal(korean, escaped, sizeof(escaped)) != 0 ||
+            snprintf(sql, sizeof(sql),
+                     "SELECT english FROM dictionary WHERE korean = '%s';",
+                     escaped) >= (int)sizeof(sql)) {
+            return set_body(resp, 400, "application/json",
+                            "{\"ok\":false,\"error\":\"query_too_long\"}");
+        }
+        result = engine_exec_sql(sql, false);
+        if (wrap_dict_response(result.ok, "korean", korean, 0, result.json ? result.json : "{}", &response_json) != 0) {
+            engine_result_free(&result);
+            return set_body(resp, 500, "application/json",
+                            "{\"ok\":false,\"error\":\"response_too_large\"}");
+        }
+        engine_result_free(&result);
+        return set_cached_body(resp, response_json);
+    } else {
+        return set_body(resp, 400, "application/json",
+                        "{\"ok\":false,\"error\":\"missing_query\"}");
+    }
+
+    if (dict_cache_get(cache, key, &cached_json)) {
+        if (wrap_dict_response(1, mode, query, 1, cached_json, &response_json) != 0) {
+            free(cached_json);
+            return set_body(resp, 500, "application/json",
+                            "{\"ok\":false,\"error\":\"response_too_large\"}");
+        }
+        free(cached_json);
+        return set_cached_body(resp, response_json);
+    }
+
+    result = engine_exec_sql(sql, false);
+    if (wrap_dict_response(result.ok, mode, query, 0, result.json ? result.json : "{}", &response_json) != 0) {
+        engine_result_free(&result);
+        return set_body(resp, 500, "application/json",
+                        "{\"ok\":false,\"error\":\"response_too_large\"}");
+    }
+    if (result.ok && result.json != NULL) {
+        dict_cache_put(cache, key, result.json);
+    }
+    engine_result_free(&result);
+
+    return set_cached_body(resp, response_json);
 }
 
 static void take_engine_result(http_response_t *resp, engine_result_t *result) {
@@ -228,6 +428,10 @@ int router_dispatch(const http_request_t *req, http_response_t *resp) {
                         "{\"ok\":false,\"error\":\"bad_request\"}");
     }
 
+    if (strcmp(req->path, "/api/dict") == 0) {
+        return handle_dict_request(req, resp);
+    }
+
     if (strcmp(req->path, "/api/query") == 0) {
         engine_result_t result;
         if (!method_is(req, "POST")) {
@@ -264,15 +468,25 @@ int router_dispatch(const http_request_t *req, http_response_t *resp) {
     if (strcmp(req->path, "/api/stats") == 0) {
         uint64_t total = 0;
         uint64_t lock_wait = 0;
-        char body[256];
+        dict_cache_t *cache;
+        unsigned long cache_hits = 0;
+        unsigned long cache_misses = 0;
+        char body[384];
         if (!method_is(req, "GET")) {
             return set_body(resp, 405, "application/json",
                             "{\"ok\":false,\"error\":\"method_not_allowed\"}");
         }
+        cache = router_dict_cache();
+        if (cache != NULL) {
+            cache_hits = dict_cache_hits(cache);
+            cache_misses = dict_cache_misses(cache);
+        }
         engine_get_stats(&total, &lock_wait);
         snprintf(body, sizeof(body),
-                 "{\"ok\":true,\"total_queries\":%llu,\"lock_wait_ns_total\":%llu}",
-                 (unsigned long long)total, (unsigned long long)lock_wait);
+                 "{\"ok\":true,\"total_queries\":%llu,\"lock_wait_ns_total\":%llu,"
+                 "\"cache_hits\":%lu,\"cache_misses\":%lu}",
+                 (unsigned long long)total, (unsigned long long)lock_wait,
+                 cache_hits, cache_misses);
         return set_body(resp, 200, "application/json", body);
     }
 

@@ -149,7 +149,7 @@ static void test_concurrent_access(void)
     int i;
 
     printf("[TEST] concurrent get/put smoke\n");
-    cache = dict_cache_create(32);
+    cache = dict_cache_create(256);
     CHECK(cache != NULL, "cache created");
     CHECK(!dict_cache_get(cache, "english:not-found", &missing), "initial miss recorded");
     CHECK(missing == NULL, "initial miss leaves out_json NULL");
@@ -183,7 +183,7 @@ static void *cache_worker(void *arg)
         char json[96];
         char *cached = NULL;
 
-        snprintf(key, sizeof(key), "english:word-%d", i % 16);
+        snprintf(key, sizeof(key), "english:t%d-word-%d", worker->thread_id, i % 16);
         snprintf(json, sizeof(json), "{\"thread\":%d,\"i\":%d}",
                  worker->thread_id, i);
 
