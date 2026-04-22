@@ -364,7 +364,10 @@
   const MAX_TRACE_ROWS = 24;
   const MAX_SPARKLINE_BARS = 10;
   const STATS_POLL_MS = 1000;
-  const QUERY_TIMEOUT_MS = 8000;
+  /* writer 가 테이블 wrlock 을 대기하는 동안 reader/stress 트래픽이 쌓이면
+   * 8s 내 응답이 못 돌아오는 경우가 있어 UI 가 오탐(실패)로 표기. 서버 쪽은
+   * write lock timeout 이 없으므로 FE timeout 만 여유 있게. */
+  const QUERY_TIMEOUT_MS = 60000;
   const STATS_TIMEOUT_MS = 3000;
   const AUTOCOMPLETE_DEBOUNCE_MS = 150;
   /* PR #19 (trie router endpoint) + PR #22 (warming_up gate) 머지 완료 →
