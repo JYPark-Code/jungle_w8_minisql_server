@@ -10,6 +10,8 @@
 #include <sys/stat.h>
 
 #define DICT_CACHE_CAPACITY 1024
+#define AUTOCOMPLETE_DEFAULT_LIMIT 5
+#define AUTOCOMPLETE_MAX_LIMIT 20
 
 static char s_web_root[512] = "./web";
 static dict_cache_t *s_dict_cache;
@@ -160,6 +162,14 @@ static void append_json_escaped(char *out, size_t out_size, size_t *offset,
     out[*offset] = '\0';
 }
 
+static int append_char(char *out, size_t out_size, size_t *offset, char ch) {
+    if (out == NULL || out_size == 0 || offset == NULL) return -1;
+    if (*offset + 1U >= out_size) return -1;
+    out[(*offset)++] = ch;
+    out[*offset] = '\0';
+    return 0;
+}
+
 static int sql_escape_literal(const char *src, char *dst, size_t dst_size) {
     size_t out = 0;
 
@@ -186,6 +196,254 @@ static int is_positive_int_text(const char *text) {
         text++;
     }
     return 1;
+}
+
+static int is_ascii_lowercase_word(const char *text) {
+    const unsigned char *p = (const unsigned char *)text;
+
+    if (text == NULL || text[0] == '\0') return 0;
+    while (*p != '\0') {
+        if (*p < 'a' || *p > 'z') return 0;
+        p++;
+    }
+    return 1;
+}
+
+static int parse_limit_param(const char *query, int *out_limit) {
+    char limit_text[32];
+    int limit;
+
+    if (out_limit == NULL) return -1;
+    *out_limit = AUTOCOMPLETE_DEFAULT_LIMIT;
+
+    if (query_param(query, "limit", limit_text, sizeof(limit_text)) != 0) {
+        return 0;
+    }
+    if (!is_positive_int_text(limit_text)) {
+        return -1;
+    }
+
+    limit = atoi(limit_text);
+    if (limit <= 0 || limit > AUTOCOMPLETE_MAX_LIMIT) {
+        return -1;
+    }
+
+    *out_limit = limit;
+    return 0;
+}
+
+static int json_read_string_at(const char **cursor, char *out, size_t out_size) {
+    const char *p;
+    size_t len = 0;
+
+    if (cursor == NULL || *cursor == NULL || out == NULL || out_size == 0) return -1;
+    p = *cursor;
+    if (*p != '"') return -1;
+    p++;
+
+    while (*p != '\0') {
+        unsigned char ch = (unsigned char)*p++;
+
+        if (ch == '"') {
+            out[len] = '\0';
+            *cursor = p;
+            return 0;
+        }
+
+        if (ch == '\\') {
+            ch = (unsigned char)*p++;
+            if (ch == '"' || ch == '\\' || ch == '/') {
+                /* keep ch as-is */
+            } else if (ch == 'n') {
+                ch = '\n';
+            } else if (ch == 'r') {
+                ch = '\r';
+            } else if (ch == 't') {
+                ch = '\t';
+            } else {
+                return -1;
+            }
+        }
+
+        if (ch < 0x20U || len + 1U >= out_size) return -1;
+        out[len++] = (char)ch;
+    }
+
+    return -1;
+}
+
+static int json_get_string_field(const char *body, const char *field,
+                                 char *out, size_t out_size) {
+    char needle[96];
+    const char *p;
+    int n;
+
+    if (body == NULL || field == NULL || out == NULL || out_size == 0) return -1;
+    out[0] = '\0';
+
+    n = snprintf(needle, sizeof(needle), "\"%s\"", field);
+    if (n < 0 || (size_t)n >= sizeof(needle)) return -1;
+
+    p = body;
+    while ((p = strstr(p, needle)) != NULL) {
+        p += (size_t)n;
+        while (isspace((unsigned char)*p)) p++;
+        if (*p != ':') continue;
+        p++;
+        while (isspace((unsigned char)*p)) p++;
+        return json_read_string_at(&p, out, out_size);
+    }
+
+    return -1;
+}
+
+static int skip_json_string(const char **cursor) {
+    const char *p;
+
+    if (cursor == NULL || *cursor == NULL) return -1;
+    p = *cursor;
+    if (*p != '"') return -1;
+    p++;
+
+    while (*p != '\0') {
+        unsigned char ch = (unsigned char)*p++;
+        if (ch == '"') {
+            *cursor = p;
+            return 0;
+        }
+        if (ch == '\\') {
+            if (*p == '\0') return -1;
+            p++;
+        }
+    }
+
+    return -1;
+}
+
+static int build_suggestions_array(const char *engine_json, char *out,
+                                   size_t out_size) {
+    const char *p;
+    size_t offset = 0;
+    int first = 1;
+
+    if (engine_json == NULL || out == NULL || out_size == 0) return -1;
+    out[0] = '\0';
+    if (append_char(out, out_size, &offset, '[') != 0) return -1;
+
+    p = strstr(engine_json, "\"rows\":[");
+    if (p == NULL) {
+        return append_char(out, out_size, &offset, ']');
+    }
+
+    p = strchr(p, '[');
+    if (p == NULL) return -1;
+    p++;
+
+    while (*p != '\0') {
+        while (isspace((unsigned char)*p) || *p == ',') p++;
+        if (*p == ']') break;
+        if (*p != '[') {
+            p++;
+            continue;
+        }
+
+        p++;
+        while (isspace((unsigned char)*p)) p++;
+        if (*p == '"') {
+            char value[256];
+            if (json_read_string_at(&p, value, sizeof(value)) != 0) return -1;
+            if (!first && append_char(out, out_size, &offset, ',') != 0) return -1;
+            if (append_char(out, out_size, &offset, '"') != 0) return -1;
+            append_json_escaped(out, out_size, &offset, value);
+            if (append_char(out, out_size, &offset, '"') != 0) return -1;
+            first = 0;
+        }
+
+        while (*p != '\0') {
+            if (*p == '"') {
+                if (skip_json_string(&p) != 0) return -1;
+            } else if (*p == ']') {
+                p++;
+                break;
+            } else {
+                p++;
+            }
+        }
+    }
+
+    return append_char(out, out_size, &offset, ']');
+}
+
+static int build_autocomplete_response(const char *prefix,
+                                       const engine_result_t *result,
+                                       char **out_json) {
+    const char *engine_json;
+    char prefix_buf[512];
+    char suggestions[4096];
+    size_t prefix_off = 0;
+    size_t needed;
+    char *json;
+
+    if (prefix == NULL || result == NULL || out_json == NULL) return -1;
+    *out_json = NULL;
+    engine_json = result->json ? result->json : "{}";
+
+    prefix_buf[0] = '\0';
+    append_json_escaped(prefix_buf, sizeof(prefix_buf), &prefix_off, prefix);
+    if (build_suggestions_array(engine_json, suggestions, sizeof(suggestions)) != 0) {
+        return -1;
+    }
+
+    needed = strlen("{\"ok\":") + strlen(result->ok ? "true" : "false") +
+             strlen(",\"prefix\":\"") + strlen(prefix_buf) +
+             strlen("\",\"suggestions\":") + strlen(suggestions) +
+             strlen(",\"elapsed_ms\":") + 32U +
+             strlen(",\"engine\":") + strlen(engine_json) +
+             strlen("}") + 1U;
+
+    json = malloc(needed);
+    if (json == NULL) return -1;
+
+    snprintf(json, needed,
+             "{\"ok\":%s,\"prefix\":\"%s\",\"suggestions\":%s,"
+             "\"elapsed_ms\":%.3f,\"engine\":%s}",
+             result->ok ? "true" : "false", prefix_buf, suggestions,
+             result->elapsed_ms, engine_json);
+    *out_json = json;
+    return 0;
+}
+
+static int build_admin_insert_response(const char *english,
+                                       const engine_result_t *result,
+                                       char **out_json) {
+    const char *engine_json;
+    char english_buf[512];
+    size_t english_off = 0;
+    size_t needed;
+    char *json;
+
+    if (english == NULL || result == NULL || out_json == NULL) return -1;
+    *out_json = NULL;
+    engine_json = result->json ? result->json : "{}";
+
+    english_buf[0] = '\0';
+    append_json_escaped(english_buf, sizeof(english_buf), &english_off, english);
+
+    needed = strlen("{\"ok\":") + strlen(result->ok ? "true" : "false") +
+             strlen(",\"english\":\"") + strlen(english_buf) +
+             strlen("\",\"elapsed_ms\":") + 32U +
+             strlen(",\"engine\":") + strlen(engine_json) +
+             strlen("}") + 1U;
+
+    json = malloc(needed);
+    if (json == NULL) return -1;
+
+    snprintf(json, needed,
+             "{\"ok\":%s,\"english\":\"%s\",\"elapsed_ms\":%.3f,\"engine\":%s}",
+             result->ok ? "true" : "false", english_buf, result->elapsed_ms,
+             engine_json);
+    *out_json = json;
+    return 0;
 }
 
 static int wrap_dict_response(int ok, const char *mode, const char *query, int cache_hit,
@@ -215,6 +473,106 @@ static int wrap_dict_response(int ok, const char *mode, const char *query, int c
              prefix, ok ? "true" : "false", cache_hit ? "true" : "false",
              mode, query_buf, engine_json);
     *out_json = json;
+    return 0;
+}
+
+static int handle_autocomplete_request(const http_request_t *req,
+                                       http_response_t *resp) {
+    char prefix[256];
+    char escaped[512];
+    char sql[768];
+    int limit;
+    engine_result_t result;
+    char *response_json = NULL;
+    int status;
+
+    if (!method_is(req, "GET")) {
+        return set_body(resp, 405, "application/json",
+                        "{\"ok\":false,\"error\":\"method_not_allowed\"}");
+    }
+    if (query_param(req->query, "prefix", prefix, sizeof(prefix)) != 0 ||
+        !is_ascii_lowercase_word(prefix)) {
+        return set_body(resp, 400, "application/json",
+                        "{\"ok\":false,\"error\":\"invalid_prefix\"}");
+    }
+    if (parse_limit_param(req->query, &limit) != 0) {
+        return set_body(resp, 400, "application/json",
+                        "{\"ok\":false,\"error\":\"invalid_limit\"}");
+    }
+    if (sql_escape_literal(prefix, escaped, sizeof(escaped)) != 0 ||
+        snprintf(sql, sizeof(sql),
+                 "SELECT english FROM dictionary WHERE english LIKE '%s%%' LIMIT %d;",
+                 escaped, limit) >= (int)sizeof(sql)) {
+        return set_body(resp, 400, "application/json",
+                        "{\"ok\":false,\"error\":\"query_too_long\"}");
+    }
+
+    result = engine_exec_sql(sql, false);
+    if (build_autocomplete_response(prefix, &result, &response_json) != 0) {
+        engine_result_free(&result);
+        return set_body(resp, 500, "application/json",
+                        "{\"ok\":false,\"error\":\"response_too_large\"}");
+    }
+    status = result.ok ? 200 : 500;
+    engine_result_free(&result);
+    if (set_cached_body(resp, response_json) != 0) return -1;
+    resp->status = status;
+    return 0;
+}
+
+static int handle_admin_insert_request(const http_request_t *req,
+                                       http_response_t *resp) {
+    char english[256];
+    char korean[256];
+    char escaped_english[512];
+    char escaped_korean[512];
+    char sql[1024];
+    engine_result_t result;
+    char *response_json = NULL;
+    int status;
+
+    if (!method_is(req, "POST")) {
+        return set_body(resp, 405, "application/json",
+                        "{\"ok\":false,\"error\":\"method_not_allowed\"}");
+    }
+    if (req->body == NULL || req->content_length == 0) {
+        return set_body(resp, 400, "application/json",
+                        "{\"ok\":false,\"error\":\"empty_body\"}");
+    }
+    if (json_get_string_field(req->body, "english", english, sizeof(english)) != 0 ||
+        json_get_string_field(req->body, "korean", korean, sizeof(korean)) != 0 ||
+        !is_ascii_lowercase_word(english) || korean[0] == '\0') {
+        return set_body(resp, 400, "application/json",
+                        "{\"ok\":false,\"error\":\"invalid_payload\"}");
+    }
+    if (sql_escape_literal(english, escaped_english, sizeof(escaped_english)) != 0 ||
+        sql_escape_literal(korean, escaped_korean, sizeof(escaped_korean)) != 0 ||
+        snprintf(sql, sizeof(sql),
+                 "INSERT INTO dictionary (english, korean) VALUES ('%s', '%s');",
+                 escaped_english, escaped_korean) >= (int)sizeof(sql)) {
+        return set_body(resp, 400, "application/json",
+                        "{\"ok\":false,\"error\":\"payload_too_long\"}");
+    }
+
+    result = engine_exec_sql(sql, false);
+    if (result.ok) {
+        dict_cache_t *cache = router_dict_cache();
+        char key[320];
+        if (cache != NULL &&
+            snprintf(key, sizeof(key), "english:%s", english) < (int)sizeof(key)) {
+            dict_cache_invalidate(cache, key);
+        }
+    }
+
+    if (build_admin_insert_response(english, &result, &response_json) != 0) {
+        engine_result_free(&result);
+        return set_body(resp, 500, "application/json",
+                        "{\"ok\":false,\"error\":\"response_too_large\"}");
+    }
+    status = result.ok ? 200 : 500;
+    engine_result_free(&result);
+    if (set_cached_body(resp, response_json) != 0) return -1;
+    resp->status = status;
     return 0;
 }
 
@@ -430,6 +788,14 @@ int router_dispatch(const http_request_t *req, http_response_t *resp) {
 
     if (strcmp(req->path, "/api/dict") == 0) {
         return handle_dict_request(req, resp);
+    }
+
+    if (strcmp(req->path, "/api/autocomplete") == 0) {
+        return handle_autocomplete_request(req, resp);
+    }
+
+    if (strcmp(req->path, "/api/admin/insert") == 0) {
+        return handle_admin_insert_request(req, resp);
     }
 
     if (strcmp(req->path, "/api/query") == 0) {
