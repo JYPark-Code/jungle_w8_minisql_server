@@ -1,0 +1,1277 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>MiniSQL Concurrency Demo</title>
+<style>
+  :root {
+    --bg: #0b1020;
+    --bg-elevated: #121a2d;
+    --panel: rgba(12, 20, 35, 0.88);
+    --panel-strong: #18233d;
+    --ink: #eef2ff;
+    --muted: #98a7c2;
+    --line: rgba(255, 255, 255, 0.12);
+    --accent: #f59e0b;
+    --accent-strong: #d97706;
+    --cool: #22c55e;
+    --warn: #f97316;
+    --danger: #ef4444;
+    --shadow: 0 20px 60px rgba(0, 0, 0, 0.32);
+    --heading: "Palatino Linotype", "Book Antiqua", Palatino, serif;
+    --body: "Bahnschrift", "Segoe UI", sans-serif;
+    --mono: "Consolas", "Liberation Mono", monospace;
+  }
+
+  * {
+    box-sizing: border-box;
+  }
+
+  html {
+    scroll-behavior: smooth;
+  }
+
+  body {
+    margin: 0;
+    min-height: 100vh;
+    background:
+      radial-gradient(circle at top left, rgba(245, 158, 11, 0.18), transparent 32%),
+      radial-gradient(circle at 85% 15%, rgba(34, 197, 94, 0.12), transparent 24%),
+      linear-gradient(180deg, #0a0f1c 0%, #0f172a 100%);
+    color: var(--ink);
+    font-family: var(--body);
+  }
+
+  body::before {
+    content: "";
+    position: fixed;
+    inset: 0;
+    pointer-events: none;
+    background-image:
+      linear-gradient(rgba(255, 255, 255, 0.035) 1px, transparent 1px),
+      linear-gradient(90deg, rgba(255, 255, 255, 0.035) 1px, transparent 1px);
+    background-size: 28px 28px;
+    mask-image: linear-gradient(180deg, rgba(0, 0, 0, 0.5), transparent 88%);
+  }
+
+  main {
+    width: min(1200px, calc(100vw - 32px));
+    margin: 0 auto;
+    padding: 40px 0 56px;
+  }
+
+  .hero {
+    display: grid;
+    grid-template-columns: minmax(0, 1.45fr) minmax(280px, 0.85fr);
+    gap: 20px;
+    margin-bottom: 24px;
+  }
+
+  .hero-card,
+  .side-card,
+  .surface {
+    background: var(--panel);
+    border: 1px solid var(--line);
+    border-radius: 22px;
+    box-shadow: var(--shadow);
+    backdrop-filter: blur(18px);
+  }
+
+  .hero-card {
+    padding: 28px;
+    position: relative;
+    overflow: hidden;
+  }
+
+  .hero-card::after {
+    content: "";
+    position: absolute;
+    inset: auto -60px -60px auto;
+    width: 220px;
+    height: 220px;
+    border-radius: 999px;
+    background: radial-gradient(circle, rgba(245, 158, 11, 0.26), transparent 72%);
+  }
+
+  .side-card {
+    padding: 24px;
+    display: flex;
+    flex-direction: column;
+    gap: 16px;
+    justify-content: space-between;
+  }
+
+  .eyebrow {
+    color: var(--accent);
+    font-size: 12px;
+    letter-spacing: 0.18em;
+    text-transform: uppercase;
+    margin-bottom: 10px;
+  }
+
+  h1,
+  h2,
+  h3 {
+    font-family: var(--heading);
+    margin: 0;
+    letter-spacing: -0.02em;
+  }
+
+  h1 {
+    font-size: clamp(34px, 5vw, 58px);
+    line-height: 0.96;
+    margin-bottom: 14px;
+  }
+
+  .hero p,
+  .surface p,
+  .side-card p {
+    margin: 0;
+    color: var(--muted);
+    line-height: 1.6;
+  }
+
+  .stat-strip {
+    display: grid;
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+    gap: 12px;
+    margin-top: 22px;
+  }
+
+  .stat-pill {
+    padding: 14px 16px;
+    border: 1px solid rgba(255, 255, 255, 0.08);
+    border-radius: 16px;
+    background: rgba(255, 255, 255, 0.03);
+  }
+
+  .stat-label {
+    display: block;
+    font-size: 12px;
+    color: var(--muted);
+    margin-bottom: 6px;
+    letter-spacing: 0.08em;
+    text-transform: uppercase;
+  }
+
+  .stat-value {
+    font-size: 22px;
+    font-weight: 700;
+    font-family: var(--mono);
+  }
+
+  .note-list {
+    margin: 0;
+    padding-left: 18px;
+    color: var(--muted);
+  }
+
+  .note-list li + li {
+    margin-top: 10px;
+  }
+
+  .tabs {
+    display: flex;
+    gap: 10px;
+    margin-bottom: 18px;
+    flex-wrap: wrap;
+  }
+
+  .tab-button {
+    border: 1px solid rgba(255, 255, 255, 0.1);
+    background: rgba(255, 255, 255, 0.035);
+    color: var(--muted);
+    border-radius: 999px;
+    padding: 12px 18px;
+    font: inherit;
+    cursor: pointer;
+    transition: 140ms ease;
+  }
+
+  .tab-button:hover,
+  .tab-button:focus-visible {
+    color: var(--ink);
+    border-color: rgba(245, 158, 11, 0.5);
+    outline: none;
+    transform: translateY(-1px);
+  }
+
+  .tab-button.is-active {
+    color: #1f1302;
+    border-color: transparent;
+    background: linear-gradient(135deg, #fcd34d 0%, #f59e0b 100%);
+  }
+
+  .tab-panel {
+    display: none;
+  }
+
+  .tab-panel.is-active {
+    display: block;
+  }
+
+  .panel-grid {
+    display: grid;
+    grid-template-columns: minmax(0, 1.2fr) minmax(320px, 0.8fr);
+    gap: 18px;
+    margin-bottom: 18px;
+  }
+
+  .surface {
+    padding: 22px;
+  }
+
+  .surface-header {
+    display: flex;
+    align-items: flex-start;
+    justify-content: space-between;
+    gap: 14px;
+    margin-bottom: 18px;
+  }
+
+  .surface-header p {
+    max-width: 58ch;
+  }
+
+  .badge {
+    display: inline-flex;
+    align-items: center;
+    gap: 8px;
+    border-radius: 999px;
+    padding: 8px 12px;
+    font-size: 12px;
+    background: rgba(245, 158, 11, 0.12);
+    color: #fed7aa;
+    white-space: nowrap;
+  }
+
+  .badge::before {
+    content: "";
+    width: 8px;
+    height: 8px;
+    border-radius: 50%;
+    background: currentColor;
+    box-shadow: 0 0 0 4px rgba(245, 158, 11, 0.12);
+  }
+
+  .form-grid {
+    display: grid;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: 14px;
+  }
+
+  .field {
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+  }
+
+  .field label {
+    color: var(--muted);
+    font-size: 13px;
+  }
+
+  .field input,
+  .field textarea {
+    width: 100%;
+    background: var(--bg-elevated);
+    border: 1px solid rgba(255, 255, 255, 0.1);
+    color: var(--ink);
+    border-radius: 14px;
+    padding: 12px 14px;
+    font: inherit;
+  }
+
+  .field textarea {
+    min-height: 118px;
+    resize: vertical;
+    font-family: var(--mono);
+    font-size: 13px;
+    line-height: 1.5;
+  }
+
+  .field input {
+    min-height: 46px;
+  }
+
+  .field input:focus,
+  .field textarea:focus,
+  .action-row button:focus-visible,
+  .tab-button:focus-visible {
+    outline: 2px solid rgba(245, 158, 11, 0.45);
+    outline-offset: 2px;
+  }
+
+  .field-span-2 {
+    grid-column: 1 / -1;
+  }
+
+  .action-row {
+    display: flex;
+    gap: 12px;
+    align-items: center;
+    flex-wrap: wrap;
+    margin-top: 18px;
+  }
+
+  button.action {
+    border: none;
+    border-radius: 999px;
+    padding: 12px 18px;
+    font: inherit;
+    font-weight: 700;
+    cursor: pointer;
+    transition: 140ms ease;
+  }
+
+  button.action:hover {
+    transform: translateY(-1px);
+  }
+
+  button.primary {
+    background: linear-gradient(135deg, #f59e0b 0%, #ea580c 100%);
+    color: #120701;
+  }
+
+  button.secondary {
+    background: rgba(255, 255, 255, 0.05);
+    border: 1px solid rgba(255, 255, 255, 0.1);
+    color: var(--ink);
+  }
+
+  button.action:disabled {
+    opacity: 0.45;
+    cursor: not-allowed;
+    transform: none;
+  }
+
+  .status-line {
+    font-size: 13px;
+    color: var(--muted);
+  }
+
+  .status-line strong {
+    color: var(--ink);
+  }
+
+  .metrics {
+    display: grid;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: 12px;
+    margin-bottom: 18px;
+  }
+
+  .metric-card {
+    padding: 16px;
+    border-radius: 18px;
+    background: rgba(255, 255, 255, 0.035);
+    border: 1px solid rgba(255, 255, 255, 0.08);
+  }
+
+  .metric-card .stat-label {
+    margin-bottom: 10px;
+  }
+
+  .timeline {
+    display: grid;
+    gap: 10px;
+    max-height: 292px;
+    overflow-y: auto;
+    padding-right: 4px;
+  }
+
+  .timeline-row {
+    display: grid;
+    grid-template-columns: 104px 1fr auto;
+    gap: 10px;
+    align-items: center;
+    padding: 12px 14px;
+    border-radius: 14px;
+    background: rgba(255, 255, 255, 0.03);
+    border: 1px solid rgba(255, 255, 255, 0.06);
+    font-size: 13px;
+  }
+
+  .timeline-row code,
+  .request-table code {
+    font-family: var(--mono);
+  }
+
+  .sparkline {
+    display: flex;
+    align-items: flex-end;
+    gap: 4px;
+    min-height: 66px;
+    padding: 12px 10px 10px;
+    border-radius: 16px;
+    background:
+      linear-gradient(180deg, rgba(255, 255, 255, 0.03), rgba(255, 255, 255, 0)),
+      rgba(255, 255, 255, 0.02);
+    border: 1px solid rgba(255, 255, 255, 0.05);
+  }
+
+  .sparkline-bar {
+    flex: 1 1 0;
+    min-width: 10px;
+    border-radius: 999px 999px 3px 3px;
+    background: linear-gradient(180deg, rgba(34, 197, 94, 0.92), rgba(21, 128, 61, 0.72));
+  }
+
+  .placeholder {
+    border: 1px dashed rgba(255, 255, 255, 0.18);
+    border-radius: 18px;
+    padding: 18px;
+    color: var(--muted);
+    background: rgba(255, 255, 255, 0.02);
+  }
+
+  .result-grid {
+    display: grid;
+    grid-template-columns: minmax(0, 0.9fr) minmax(0, 1.1fr);
+    gap: 18px;
+  }
+
+  .summary-board {
+    display: grid;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: 12px;
+  }
+
+  .summary-tile {
+    padding: 18px;
+    border-radius: 18px;
+    background: rgba(255, 255, 255, 0.035);
+    border: 1px solid rgba(255, 255, 255, 0.08);
+  }
+
+  .summary-tile strong {
+    display: block;
+    font-family: var(--mono);
+    font-size: 24px;
+    margin-top: 8px;
+  }
+
+  .request-table-wrap {
+    overflow: auto;
+    border-radius: 18px;
+    border: 1px solid rgba(255, 255, 255, 0.08);
+  }
+
+  .request-table {
+    width: 100%;
+    border-collapse: collapse;
+    min-width: 620px;
+  }
+
+  .request-table th,
+  .request-table td {
+    padding: 12px 14px;
+    text-align: left;
+    border-bottom: 1px solid rgba(255, 255, 255, 0.08);
+    font-size: 13px;
+  }
+
+  .request-table th {
+    position: sticky;
+    top: 0;
+    background: #16213a;
+    color: #e8eef9;
+    z-index: 1;
+  }
+
+  .request-table tbody tr:nth-child(even) td {
+    background: rgba(255, 255, 255, 0.02);
+  }
+
+  .request-table tbody tr:hover td {
+    background: rgba(255, 255, 255, 0.05);
+  }
+
+  .ok {
+    color: #86efac;
+  }
+
+  .warn {
+    color: #fdba74;
+  }
+
+  .fail {
+    color: #fca5a5;
+  }
+
+  .caption {
+    margin-top: 12px;
+    color: var(--muted);
+    font-size: 13px;
+    line-height: 1.6;
+  }
+
+  .footnote {
+    margin-top: 18px;
+    color: var(--muted);
+    font-size: 12px;
+    line-height: 1.6;
+  }
+
+  @media (max-width: 980px) {
+    .hero,
+    .panel-grid,
+    .result-grid {
+      grid-template-columns: 1fr;
+    }
+
+    .summary-board,
+    .metrics,
+    .form-grid,
+    .stat-strip {
+      grid-template-columns: 1fr;
+    }
+
+    .timeline-row {
+      grid-template-columns: 1fr;
+      gap: 6px;
+    }
+  }
+</style>
+</head>
+<body>
+<main>
+  <section class="hero">
+    <article class="hero-card">
+      <div class="eyebrow">Round 4 Demo</div>
+      <h1>Concurrency As A Visible Surface.</h1>
+      <p>
+        이 페이지는 발표용 동시성 데모 셸이다. 탭 `(a)` 와 `(c)` 가 같은 컨테이너,
+        같은 카드 구조, 같은 fetch helper 를 공유하도록 맞춰서 merge 충돌을 줄였다.
+      </p>
+      <div class="stat-strip">
+        <div class="stat-pill">
+          <span class="stat-label">Query API</span>
+          <span class="stat-value"><code>POST /api/query</code></span>
+        </div>
+        <div class="stat-pill">
+          <span class="stat-label">Stats API</span>
+          <span class="stat-value"><code>GET /api/stats</code></span>
+        </div>
+        <div class="stat-pill">
+          <span class="stat-label">Mode</span>
+          <span class="stat-value"><code>?mode=single</code></span>
+        </div>
+      </div>
+    </article>
+
+    <aside class="side-card">
+      <div>
+        <div class="eyebrow">PM Follow-up</div>
+        <h3>현재 slice</h3>
+      </div>
+      <ol class="note-list">
+        <li>`tests/test_threadpool.c` 는 10K submit 과 shutdown drain 검증을 이미 포함한다.</li>
+        <li>탭 `(c)` 는 `/api/stats` 를 폴링하면서 read/write 경쟁 상황을 한 화면에 보여준다.</li>
+        <li>`src/stats.c` 는 만들지 않고, stats 응답은 기존 엔진/서버 경로를 소비하는 방향으로 둔다.</li>
+      </ol>
+    </aside>
+  </section>
+
+  <div class="tabs" role="tablist" aria-label="Concurrency demos">
+    <button class="tab-button is-active" type="button" data-tab-target="tab-a" role="tab" aria-selected="true">
+      (a) Concurrent Stress
+    </button>
+    <button class="tab-button" type="button" data-tab-target="tab-c" role="tab" aria-selected="false">
+      (c) RW Contention
+    </button>
+  </div>
+
+  <section id="tab-a" class="tab-panel is-active" role="tabpanel">
+    <div class="panel-grid">
+      <article class="surface">
+        <div class="surface-header">
+          <div>
+            <div class="eyebrow">Shared Shell</div>
+            <h2>탭 (a) 구조 스캐폴드</h2>
+          </div>
+          <span class="badge">merge-friendly placeholder</span>
+        </div>
+        <p>
+          탭 `(c)` 가 참조해야 하는 탭 구조만 먼저 고정했다. 용 형님 탭 `(a)` 가 합쳐질 때
+          같은 탭 헤더, 같은 카드 헤더, 같은 버튼 행, 같은 결과 보드 구조를 그대로 재사용할 수 있다.
+        </p>
+        <div class="form-grid" style="margin-top:18px;">
+          <div class="field">
+            <label for="stress-concurrency">동시 요청 수</label>
+            <input id="stress-concurrency" type="number" min="1" value="32" disabled>
+          </div>
+          <div class="field">
+            <label for="stress-endpoint">엔드포인트</label>
+            <input id="stress-endpoint" type="text" value="/api/query?mode=single | /api/query" disabled>
+          </div>
+          <div class="field field-span-2">
+            <label for="stress-sql">비교 SQL</label>
+            <textarea id="stress-sql" disabled>SELECT * FROM users WHERE id = 1;</textarea>
+          </div>
+        </div>
+        <div class="action-row">
+          <button class="action secondary" type="button" disabled>싱글 vs 멀티 비교</button>
+          <span class="status-line">
+            탭 `(a)` 구현이 들어오면 이 카드 레이아웃을 그대로 사용하면 된다.
+          </span>
+        </div>
+      </article>
+
+      <aside class="surface">
+        <div class="surface-header">
+          <div>
+            <div class="eyebrow">Merge Note</div>
+            <h2>탭 (a) 합류 포인트</h2>
+          </div>
+        </div>
+        <div class="placeholder">
+          <p>권장 연결 지점</p>
+          <ul class="note-list">
+            <li>상단 카드: controls + run button</li>
+            <li>우측 카드: summary tiles + endpoint status</li>
+            <li>하단 카드: request table + compare summary</li>
+          </ul>
+        </div>
+        <p class="footnote">
+          이 스캐폴드는 탭 `(c)` 와 동일한 DOM 구조를 유지하도록 일부러 얇게 만들었다.
+        </p>
+      </aside>
+    </div>
+  </section>
+
+  <section id="tab-c" class="tab-panel" role="tabpanel">
+    <div class="panel-grid">
+      <article class="surface">
+        <div class="surface-header">
+          <div>
+            <div class="eyebrow">RW Contention</div>
+            <h2>Read는 겹치고 Write는 막히는지 확인</h2>
+          </div>
+          <span class="badge">live stats polling</span>
+        </div>
+        <p>
+          reader 요청과 writer 요청을 동시에 던지고, 실행 중에는 `/api/stats` 를 1초마다 폴링한다.
+          서버가 아직 stub 이거나 JSON 키가 덜 정해져 있어도, 가능한 숫자만 추려서 화면에 유지한다.
+        </p>
+
+        <div class="form-grid" style="margin-top:18px;">
+          <div class="field">
+            <label for="rw-readers">Reader count</label>
+            <input id="rw-readers" type="number" min="1" max="500" value="100">
+          </div>
+          <div class="field">
+            <label for="rw-writers">Writer count</label>
+            <input id="rw-writers" type="number" min="1" max="500" value="100">
+          </div>
+          <div class="field">
+            <label for="rw-poll-ms">Stats poll interval (ms)</label>
+            <input id="rw-poll-ms" type="number" min="250" step="250" value="1000">
+          </div>
+          <div class="field">
+            <label for="rw-base-id">Writer base id</label>
+            <input id="rw-base-id" type="number" min="1" value="100000">
+          </div>
+          <div class="field field-span-2">
+            <label for="rw-select-sql">Reader SQL</label>
+            <textarea id="rw-select-sql">SELECT * FROM users WHERE id = 1;</textarea>
+          </div>
+          <div class="field field-span-2">
+            <label for="rw-insert-sql">Writer SQL template (`__ID__`, `__NAME__` 치환 가능)</label>
+            <textarea id="rw-insert-sql">INSERT INTO users (id, name, age) VALUES (__ID__, '__NAME__', 30);</textarea>
+          </div>
+        </div>
+
+        <div class="action-row">
+          <button id="rw-run" class="action primary" type="button">RW 시나리오 실행</button>
+          <button id="rw-refresh-stats" class="action secondary" type="button">stats 1회 새로고침</button>
+          <span id="rw-run-status" class="status-line">
+            아직 실행하지 않음.
+          </span>
+        </div>
+      </article>
+
+      <aside class="surface">
+        <div class="surface-header">
+          <div>
+            <div class="eyebrow">Stats Snapshot</div>
+            <h2>폴링 상태와 최근 추이</h2>
+          </div>
+        </div>
+
+        <div class="metrics">
+          <div class="metric-card">
+            <span class="stat-label">Active workers</span>
+            <div id="metric-active-workers" class="stat-value">-</div>
+          </div>
+          <div class="metric-card">
+            <span class="stat-label">Queue depth</span>
+            <div id="metric-queue-depth" class="stat-value">-</div>
+          </div>
+          <div class="metric-card">
+            <span class="stat-label">Total queries</span>
+            <div id="metric-total-queries" class="stat-value">-</div>
+          </div>
+          <div class="metric-card">
+            <span class="stat-label">Lock wait</span>
+            <div id="metric-lock-wait" class="stat-value">-</div>
+          </div>
+        </div>
+
+        <div class="surface-header" style="margin-bottom:10px;">
+          <div>
+            <div class="eyebrow">Sparkline</div>
+            <h3 style="font-size:24px;">Active workers / queue depth</h3>
+          </div>
+        </div>
+        <div id="stats-sparkline" class="sparkline" aria-live="polite"></div>
+        <p class="caption" id="stats-endpoint-status">
+          `/api/stats` 응답을 기다리는 중.
+        </p>
+
+        <div class="surface-header" style="margin:18px 0 10px;">
+          <div>
+            <div class="eyebrow">Recent Polls</div>
+            <h3 style="font-size:24px;">최근 8개 샘플</h3>
+          </div>
+        </div>
+        <div id="stats-timeline" class="timeline"></div>
+      </aside>
+    </div>
+
+    <div class="result-grid">
+      <article class="surface">
+        <div class="surface-header">
+          <div>
+            <div class="eyebrow">Outcome Board</div>
+            <h2>요청 집계</h2>
+          </div>
+        </div>
+        <div id="rw-summary-board" class="summary-board"></div>
+        <p class="caption">
+          reader / writer 요청은 동시에 발사된다. 성공 여부는 HTTP status 와 JSON `ok`
+          값을 모두 참고해 판정한다.
+        </p>
+      </article>
+
+      <article class="surface">
+        <div class="surface-header">
+          <div>
+            <div class="eyebrow">Request Trace</div>
+            <h2>상세 요청 로그</h2>
+          </div>
+        </div>
+        <div class="request-table-wrap">
+          <table class="request-table">
+            <thead>
+              <tr>
+                <th>kind</th>
+                <th>#</th>
+                <th>status</th>
+                <th>elapsed</th>
+                <th>detail</th>
+              </tr>
+            </thead>
+            <tbody id="rw-request-table-body">
+              <tr>
+                <td colspan="5">아직 실행 기록이 없습니다.</td>
+              </tr>
+            </tbody>
+          </table>
+        </div>
+      </article>
+    </div>
+  </section>
+</main>
+
+<script>
+  (function () {
+    const MAX_TIMELINE_ROWS = 8;
+    const MAX_SPARKLINE_BARS = 18;
+    const MAX_TABLE_ROWS = 40;
+    const QUERY_TIMEOUT_MS = 8000;
+    const STATS_TIMEOUT_MS = 3000;
+    const TAB_BUTTONS = Array.from(document.querySelectorAll("[data-tab-target]"));
+    const TAB_PANELS = Array.from(document.querySelectorAll(".tab-panel"));
+
+    const rwState = {
+      running: false,
+      pollTimer: null,
+      statsHistory: [],
+      requestRows: []
+    };
+
+    const rwEls = {
+      readers: document.getElementById("rw-readers"),
+      writers: document.getElementById("rw-writers"),
+      pollMs: document.getElementById("rw-poll-ms"),
+      baseId: document.getElementById("rw-base-id"),
+      selectSql: document.getElementById("rw-select-sql"),
+      insertSql: document.getElementById("rw-insert-sql"),
+      run: document.getElementById("rw-run"),
+      refreshStats: document.getElementById("rw-refresh-stats"),
+      runStatus: document.getElementById("rw-run-status"),
+      summaryBoard: document.getElementById("rw-summary-board"),
+      tableBody: document.getElementById("rw-request-table-body"),
+      endpointStatus: document.getElementById("stats-endpoint-status"),
+      timeline: document.getElementById("stats-timeline"),
+      sparkline: document.getElementById("stats-sparkline"),
+      activeWorkers: document.getElementById("metric-active-workers"),
+      queueDepth: document.getElementById("metric-queue-depth"),
+      totalQueries: document.getElementById("metric-total-queries"),
+      lockWait: document.getElementById("metric-lock-wait")
+    };
+
+    function escapeHtml(value) {
+      return String(value)
+        .replace(/&/g, "&amp;")
+        .replace(/</g, "&lt;")
+        .replace(/>/g, "&gt;")
+        .replace(/"/g, "&quot;")
+        .replace(/'/g, "&#39;");
+    }
+
+    function formatNumber(value) {
+      if (typeof value !== "number" || Number.isNaN(value)) {
+        return "-";
+      }
+      return value.toLocaleString("ko-KR");
+    }
+
+    function formatMs(value) {
+      if (typeof value !== "number" || Number.isNaN(value)) {
+        return "-";
+      }
+      if (value >= 1000) {
+        return (value / 1000).toFixed(2) + " s";
+      }
+      return value.toFixed(1) + " ms";
+    }
+
+    function isoClock(date) {
+      return date.toLocaleTimeString("ko-KR", {
+        hour12: false,
+        hour: "2-digit",
+        minute: "2-digit",
+        second: "2-digit"
+      });
+    }
+
+    function tryParseJson(text) {
+      try {
+        return JSON.parse(text);
+      } catch (error) {
+        return null;
+      }
+    }
+
+    function previewText(value) {
+      return String(value || "").trim().slice(0, 120) || "empty body";
+    }
+
+    function isRecord(value) {
+      return value !== null && typeof value === "object" && !Array.isArray(value);
+    }
+
+    function fetchWithTimeout(url, options, timeoutMs) {
+      const controller = new AbortController();
+      const timer = window.setTimeout(function () {
+        controller.abort();
+      }, timeoutMs);
+
+      return fetch(url, Object.assign({}, options, {
+        signal: controller.signal
+      })).finally(function () {
+        window.clearTimeout(timer);
+      });
+    }
+
+    function pickNumber(candidate, keys) {
+      for (const key of keys) {
+        if (Object.prototype.hasOwnProperty.call(candidate, key)) {
+          const value = Number(candidate[key]);
+          if (!Number.isNaN(value)) {
+            return value;
+          }
+        }
+      }
+      return null;
+    }
+
+    function lockWaitMsFromStats(stats) {
+      const directMs = pickNumber(stats, ["lock_wait_ms", "lockWaitMs"]);
+      if (directMs !== null) {
+        return directMs;
+      }
+      const nsValue = pickNumber(stats, ["lock_wait_ns_total", "lockWaitNsTotal", "lock_wait_ns"]);
+      if (nsValue !== null) {
+        return nsValue / 1000000;
+      }
+      return null;
+    }
+
+    function normalizeStatsPayload(payload) {
+      const stats = payload && typeof payload === "object" ? payload : {};
+      return {
+        activeWorkers: pickNumber(stats, ["active_workers", "activeWorkers"]),
+        queueDepth: pickNumber(stats, ["queue_depth", "queueDepth"]),
+        totalQueries: pickNumber(stats, ["total_queries", "totalQueries"]),
+        qps: pickNumber(stats, ["qps_last_sec", "qpsLastSec", "qps"]),
+        lockWaitMs: lockWaitMsFromStats(stats)
+      };
+    }
+
+    function hasRecognizedStatsMetrics(stats) {
+      return stats.activeWorkers !== null ||
+        stats.queueDepth !== null ||
+        stats.totalQueries !== null ||
+        stats.qps !== null ||
+        stats.lockWaitMs !== null;
+    }
+
+    function isValidQueryPayload(payload) {
+      return isRecord(payload) && typeof payload.ok === "boolean";
+    }
+
+    function setTab(targetId) {
+      TAB_BUTTONS.forEach(function (button) {
+        const isActive = button.getAttribute("data-tab-target") === targetId;
+        button.classList.toggle("is-active", isActive);
+        button.setAttribute("aria-selected", String(isActive));
+      });
+      TAB_PANELS.forEach(function (panel) {
+        panel.classList.toggle("is-active", panel.id === targetId);
+      });
+    }
+
+    TAB_BUTTONS.forEach(function (button) {
+      button.addEventListener("click", function () {
+        setTab(button.getAttribute("data-tab-target"));
+      });
+    });
+
+    async function fetchStatsSnapshot() {
+      const startedAt = performance.now();
+      try {
+        const response = await fetchWithTimeout("/api/stats", {
+          method: "GET",
+          headers: {
+            "Accept": "application/json, text/plain;q=0.9, */*;q=0.8"
+          }
+        }, STATS_TIMEOUT_MS);
+        const text = await response.text();
+        const json = tryParseJson(text);
+        const normalized = normalizeStatsPayload(json || {});
+        let ok = response.ok;
+        let raw = text;
+
+        if (json === null) {
+          ok = false;
+          raw = "invalid JSON payload: " + previewText(text);
+        } else if (!isRecord(json)) {
+          ok = false;
+          raw = "unexpected stats payload shape";
+        } else if (!hasRecognizedStatsMetrics(normalized)) {
+          ok = false;
+          raw = "missing recognized stats keys";
+        }
+
+        return {
+          ok: ok,
+          status: response.status,
+          elapsedMs: performance.now() - startedAt,
+          raw: raw,
+          stats: normalized
+        };
+      } catch (error) {
+        const message = error && error.name === "AbortError"
+          ? "request timed out after " + STATS_TIMEOUT_MS + " ms"
+          : String(error && error.message ? error.message : error);
+        return {
+          ok: false,
+          status: 0,
+          elapsedMs: performance.now() - startedAt,
+          raw: message,
+          stats: normalizeStatsPayload({})
+        };
+      }
+    }
+
+    async function sendSqlRequest(kind, ordinal, sql) {
+      const startedAt = performance.now();
+      try {
+        const response = await fetchWithTimeout("/api/query", {
+          method: "POST",
+          headers: {
+            "Content-Type": "text/plain"
+          },
+          body: sql
+        }, QUERY_TIMEOUT_MS);
+        const text = await response.text();
+        const json = tryParseJson(text);
+        const hasValidJson = isValidQueryPayload(json);
+        const logicalOk = response.ok && hasValidJson && json.ok === true;
+        let detail;
+
+        if (json === null) {
+          detail = "invalid JSON response: " + previewText(text || response.statusText);
+        } else if (!hasValidJson) {
+          detail = "missing required `ok` field";
+        } else if (json.ok === false) {
+          detail = json.message || json.error || previewText(JSON.stringify(json));
+        } else {
+          detail = json.message || previewText(JSON.stringify(json));
+        }
+
+        return {
+          kind: kind,
+          ordinal: ordinal,
+          ok: logicalOk,
+          status: response.status,
+          elapsedMs: performance.now() - startedAt,
+          detail: detail
+        };
+      } catch (error) {
+        const message = error && error.name === "AbortError"
+          ? "request timed out after " + QUERY_TIMEOUT_MS + " ms"
+          : String(error && error.message ? error.message : error);
+        return {
+          kind: kind,
+          ordinal: ordinal,
+          ok: false,
+          status: 0,
+          elapsedMs: performance.now() - startedAt,
+          detail: message
+        };
+      }
+    }
+
+    function buildWriterSql(template, baseId, index) {
+      const nextId = baseId + index;
+      return template
+        .replaceAll("__ID__", String(nextId))
+        .replaceAll("__NAME__", "writer-" + nextId);
+    }
+
+    function renderSummaryBoard(rows) {
+      if (!rows.length) {
+        rwEls.summaryBoard.innerHTML = "<div class=\"summary-tile\">실행 후 결과가 표시됩니다.</div>";
+        return;
+      }
+
+      const readers = rows.filter(function (row) { return row.kind === "reader"; });
+      const writers = rows.filter(function (row) { return row.kind === "writer"; });
+      const okRows = rows.filter(function (row) { return row.ok; });
+      const avgLatency = rows.reduce(function (sum, row) { return sum + row.elapsedMs; }, 0) / rows.length;
+
+      const tiles = [
+        { label: "Reader success", value: okRows.filter(function (row) { return row.kind === "reader"; }).length + " / " + readers.length },
+        { label: "Writer success", value: okRows.filter(function (row) { return row.kind === "writer"; }).length + " / " + writers.length },
+        { label: "Total requests", value: formatNumber(rows.length) },
+        { label: "Average latency", value: formatMs(avgLatency) }
+      ];
+
+      rwEls.summaryBoard.innerHTML = tiles.map(function (tile) {
+        return "<div class=\"summary-tile\"><span class=\"stat-label\">" +
+          escapeHtml(tile.label) +
+          "</span><strong>" +
+          escapeHtml(tile.value) +
+          "</strong></div>";
+      }).join("");
+    }
+
+    function renderRequestTable(rows) {
+      if (!rows.length) {
+        rwEls.tableBody.innerHTML = "<tr><td colspan=\"5\">아직 실행 기록이 없습니다.</td></tr>";
+        return;
+      }
+
+      const slice = rows.slice(0, MAX_TABLE_ROWS);
+      rwEls.tableBody.innerHTML = slice.map(function (row) {
+        const statusClass = row.ok ? "ok" : (row.status === 0 ? "fail" : "warn");
+        const statusText = row.ok ? "ok" : (row.status === 0 ? "network" : "http " + row.status);
+        return "<tr>" +
+          "<td><code>" + escapeHtml(row.kind) + "</code></td>" +
+          "<td>" + escapeHtml(row.ordinal) + "</td>" +
+          "<td class=\"" + statusClass + "\">" + escapeHtml(statusText) + "</td>" +
+          "<td>" + escapeHtml(formatMs(row.elapsedMs)) + "</td>" +
+          "<td>" + escapeHtml(row.detail) + "</td>" +
+          "</tr>";
+      }).join("");
+    }
+
+    function renderStatsMetrics(snapshot) {
+      rwEls.activeWorkers.textContent = formatNumber(snapshot.activeWorkers);
+      rwEls.queueDepth.textContent = formatNumber(snapshot.queueDepth);
+      rwEls.totalQueries.textContent = formatNumber(snapshot.totalQueries);
+      rwEls.lockWait.textContent = formatMs(snapshot.lockWaitMs);
+    }
+
+    function renderSparkline(history) {
+      if (!history.length) {
+        rwEls.sparkline.innerHTML = "<span class=\"status-line\">표시할 stats 샘플이 없습니다.</span>";
+        return;
+      }
+
+      const maxValue = history.reduce(function (acc, item) {
+        return Math.max(acc, item.activeWorkers || 0, item.queueDepth || 0, 1);
+      }, 1);
+
+      const recent = history.slice(-MAX_SPARKLINE_BARS);
+      rwEls.sparkline.innerHTML = recent.map(function (item) {
+        const raw = Math.max(item.activeWorkers || 0, item.queueDepth || 0, 0);
+        const height = Math.max(12, Math.round((raw / maxValue) * 56));
+        const label = "t=" + item.label + " aw=" + (item.activeWorkers ?? "-") + " qd=" + (item.queueDepth ?? "-");
+        return "<div class=\"sparkline-bar\" title=\"" + escapeHtml(label) + "\" style=\"height:" + height + "px\"></div>";
+      }).join("");
+    }
+
+    function renderTimeline(history) {
+      if (!history.length) {
+        rwEls.timeline.innerHTML = "<div class=\"timeline-row\"><span>최근 폴링 내역이 없습니다.</span></div>";
+        return;
+      }
+
+      const recent = history.slice(-MAX_TIMELINE_ROWS).reverse();
+      rwEls.timeline.innerHTML = recent.map(function (item) {
+        const endpointState = item.ok ? "ok" : (item.status === 0 ? "network" : "http " + item.status);
+        return "<div class=\"timeline-row\">" +
+          "<code>" + escapeHtml(item.label) + "</code>" +
+          "<span>aw <strong>" + escapeHtml(formatNumber(item.activeWorkers)) +
+          "</strong> / qd <strong>" + escapeHtml(formatNumber(item.queueDepth)) +
+          "</strong> / tq <strong>" + escapeHtml(formatNumber(item.totalQueries)) + "</strong></span>" +
+          "<span class=\"" + (item.ok ? "ok" : "warn") + "\">" + escapeHtml(endpointState) + "</span>" +
+          "</div>";
+      }).join("");
+    }
+
+    async function refreshStatsNow(reason) {
+      const result = await fetchStatsSnapshot();
+      const stats = result.stats;
+      const snapshot = {
+        label: isoClock(new Date()),
+        ok: result.ok,
+        status: result.status,
+        activeWorkers: stats.activeWorkers,
+        queueDepth: stats.queueDepth,
+        totalQueries: stats.totalQueries,
+        lockWaitMs: stats.lockWaitMs,
+        qps: stats.qps
+      };
+
+      rwState.statsHistory.push(snapshot);
+      if (rwState.statsHistory.length > 64) {
+        rwState.statsHistory = rwState.statsHistory.slice(-64);
+      }
+
+      renderStatsMetrics(snapshot);
+      renderSparkline(rwState.statsHistory);
+      renderTimeline(rwState.statsHistory);
+
+      if (result.ok) {
+        rwEls.endpointStatus.textContent =
+          "/api/stats " + reason + ": " + result.status + " in " + formatMs(result.elapsedMs);
+      } else {
+        rwEls.endpointStatus.textContent =
+          "/api/stats " + reason + " 실패: " + (result.status || "network error") + " · " + result.raw;
+      }
+    }
+
+    function startStatsPolling() {
+      const pollMs = Math.max(250, Number(rwEls.pollMs.value) || 1000);
+      stopStatsPolling();
+      rwState.pollTimer = window.setInterval(function () {
+        refreshStatsNow("poll");
+      }, pollMs);
+    }
+
+    function stopStatsPolling() {
+      if (rwState.pollTimer !== null) {
+        window.clearInterval(rwState.pollTimer);
+        rwState.pollTimer = null;
+      }
+    }
+
+    function setRunningState(running, message) {
+      rwState.running = running;
+      rwEls.run.disabled = running;
+      rwEls.refreshStats.disabled = running;
+      rwEls.runStatus.innerHTML = "<strong>" + escapeHtml(message) + "</strong>";
+    }
+
+    async function runRwScenario() {
+      const readerCount = Math.max(1, Number(rwEls.readers.value) || 0);
+      const writerCount = Math.max(1, Number(rwEls.writers.value) || 0);
+      const baseId = Math.max(1, Number(rwEls.baseId.value) || 0);
+      const readerSql = rwEls.selectSql.value.trim();
+      const writerTemplate = rwEls.insertSql.value.trim();
+
+      if (!readerSql || !writerTemplate) {
+        setRunningState(false, "reader / writer SQL 을 모두 채워야 합니다.");
+        return;
+      }
+
+      rwState.requestRows = [];
+      renderSummaryBoard([]);
+      renderRequestTable([]);
+      rwState.statsHistory = [];
+      renderSparkline([]);
+      renderTimeline([]);
+
+      setRunningState(true, "reader " + readerCount + " / writer " + writerCount + " 실행 중");
+      try {
+        await refreshStatsNow("before run");
+        startStatsPolling();
+
+        const readerTasks = Array.from({ length: readerCount }, function (_, index) {
+          return sendSqlRequest("reader", index + 1, readerSql);
+        });
+        const writerTasks = Array.from({ length: writerCount }, function (_, index) {
+          return sendSqlRequest("writer", index + 1, buildWriterSql(writerTemplate, baseId, index));
+        });
+
+        const rows = await Promise.all(readerTasks.concat(writerTasks));
+        stopStatsPolling();
+        await refreshStatsNow("after run");
+
+        rows.sort(function (a, b) {
+          if (a.kind === b.kind) {
+            return a.ordinal - b.ordinal;
+          }
+          return a.kind === "reader" ? -1 : 1;
+        });
+
+        rwState.requestRows = rows;
+        renderSummaryBoard(rows);
+        renderRequestTable(rows);
+
+        const okCount = rows.filter(function (row) { return row.ok; }).length;
+        setRunningState(false, okCount + " / " + rows.length + " 요청 성공");
+      } catch (error) {
+        renderSummaryBoard([]);
+        renderRequestTable([]);
+        setRunningState(false, "RW 실행 실패: " + String(error && error.message ? error.message : error));
+      } finally {
+        stopStatsPolling();
+      }
+    }
+
+    rwEls.run.addEventListener("click", function () {
+      if (!rwState.running) {
+        runRwScenario();
+      }
+    });
+
+    rwEls.refreshStats.addEventListener("click", function () {
+      refreshStatsNow("manual refresh");
+    });
+
+    renderSummaryBoard([]);
+    renderRequestTable([]);
+    renderSparkline([]);
+    renderTimeline([]);
+  })();
+</script>
+</body>
+</html>
