@@ -96,59 +96,73 @@ cache 가 router 에 들어오면서 router 가 2 명의 공유 편집 영역이
 하지만 **endpoint 단위로 분리** 되므로 실제 conflict 는 매우 작다.
 각자 본인 zone 의 `if (strcmp(req->path, ...) == 0)` 블록만 추가.
 
-### Zone R-DICT-CACHE — `/api/dict` 영한 조회 + cache (동현)
+### Zone R-DICT-CACHE — `/api/dict` 영한 조회 + dict cache (동현)
 **위치**: `router_dispatch()` 안 라우팅 분기에 신규 추가
-**로직**:
-1. `cache_get(key = word)` 시도
-2. hit → 즉시 JSON 반환, `cache_hits++`
-3. miss → `engine_exec_sql("SELECT korean FROM dictionary WHERE english='...'", false)` 호출
-4. 결과 JSON 을 `cache_put(key, json)` 후 반환, `cache_misses++`
-5. 역방향 파라미터 (`?korean=사과`) 는 같은 핸들러에서 SELECT 방향만 반대로 (선형 스캔, cache 적용은 선택)
+**파라미터**: `?english=<word>` (primary) 또는 `?id=<N>` (옵션) 또는 `?korean=<ko>` (역방향, cache 미적용)
+**로직** (영한 / id 방향):
+1. cache key 생성: `"english:<word>"` 또는 `"id:<N>"` prefix 분리
+2. `dict_cache_get(key)` 시도
+3. hit → 즉시 JSON 반환, `cache_hits++`
+4. miss → cache lock 밖에서 `engine_exec_sql(...)` 호출 (cache 가 오래
+   잠기지 않도록)
+5. 결과 JSON 을 `dict_cache_put(key, json)` 후 반환, `cache_misses++`
+6. 역방향 파라미터 (`?korean=사과`) 는 dict cache **미적용**, engine 직행 (선형 스캔)
+
+> 같은 단어 동시 miss 시 중복 DB 조회는 허용 trade-off (결과 정합성 문제 X).
 
 **삽입 예**:
 ```c
-/* ROUND2-R-DICT-CACHE: 영한 사전 조회 + router-level cache (동현) */
+/* ROUND2-R-DICT-CACHE: 영한 사전 조회 + router-level dict cache (동현) */
 if (strcmp(req->path, "/api/dict") == 0 && method_is(req, "GET")) {
-    char word[128];
+    char english[128];
+    char id_buf[32];
     char korean_body[128];
-    int has_word = (query_param(req->query, "word", word, sizeof(word)) == 0);
-    int has_ko   = (query_param(req->query, "korean", korean_body, sizeof(korean_body)) == 0);
+    int has_en = (query_param(req->query, "english", english, sizeof(english)) == 0);
+    int has_id = (query_param(req->query, "id", id_buf, sizeof(id_buf)) == 0);
+    int has_ko = (query_param(req->query, "korean", korean_body, sizeof(korean_body)) == 0);
 
-    if (!has_word && !has_ko) {
+    if (!has_en && !has_id && !has_ko) {
         return set_body(resp, 400, "application/json",
             "{\"ok\":false,\"error\":\"missing_param\"}");
     }
 
-    /* 영한 방향 (primary): cache lookup 먼저 */
-    if (has_word) {
+    /* 영한 / id 방향 (primary): dict cache lookup 먼저 */
+    if (has_en || has_id) {
+        char key[160];
+        if (has_en) snprintf(key, sizeof(key), "english:%s", english);
+        else        snprintf(key, sizeof(key), "id:%s", id_buf);
+
         char  *hit_json = NULL;
         size_t hit_len  = 0;
-        if (cache_get(s_dict_cache, word, &hit_json, &hit_len)) {
+        if (dict_cache_get(s_dict_cache, key, &hit_json, &hit_len)) {
             resp->status = 200;
             resp->content_type = "application/json";
             resp->body = hit_json;       /* heap 소유권 이전 */
             resp->body_len = hit_len;
             return 0;
         }
-        /* miss → engine 경유 */
+        /* miss → cache lock 밖에서 engine 경유 */
         char sql[512];
-        snprintf(sql, sizeof(sql),
-                 "SELECT korean FROM dictionary WHERE english='%s'", word);
+        if (has_en) {
+            snprintf(sql, sizeof(sql),
+                     "SELECT korean FROM dictionary WHERE english='%s'", english);
+        } else {
+            snprintf(sql, sizeof(sql),
+                     "SELECT english,korean FROM dictionary WHERE id=%s", id_buf);
+        }
         engine_result_t r = engine_exec_sql(sql, false);
         if (r.ok && r.json) {
-            cache_put(s_dict_cache, word, r.json, strlen(r.json));
+            dict_cache_put(s_dict_cache, key, r.json, strlen(r.json));
         }
         take_engine_result(resp, &r);
         return 0;
     }
 
-    /* 역방향 (korean body → english): 인덱스 없음, 선형 스캔 */
+    /* 역방향 (korean body → english): 인덱스 없음, 선형 스캔, dict cache 미적용 */
     char sql[512];
     snprintf(sql, sizeof(sql),
              "SELECT english FROM dictionary WHERE korean='%s'", korean_body);
     engine_result_t r = engine_exec_sql(sql, false);
-    /* 역방향도 캐시를 원하면 key 를 "ko:<word>" 같은 prefix 로 분리 가능
-     * — 구현 상세는 동현 판단 */
     take_engine_result(resp, &r);
     return 0;
 }
@@ -162,9 +176,9 @@ if (strcmp(req->path, "/api/dict") == 0 && method_is(req, "GET")) {
 if (strcmp(req->path, "/api/stats") == 0) {
     uint64_t total = 0, lock_wait_ns = 0;
     engine_get_stats(&total, &lock_wait_ns);
-    /* ROUND2-R-STATS: cache 카운터 (동현) */
-    unsigned long ch = cache_hits(s_dict_cache);
-    unsigned long cm = cache_misses(s_dict_cache);
+    /* ROUND2-R-STATS: dict cache 카운터 (동현) */
+    unsigned long ch = dict_cache_hits(s_dict_cache);
+    unsigned long cm = dict_cache_misses(s_dict_cache);
     return set_jsonf(resp, 200,
         "{\"ok\":true,\"total_queries\":%llu,\"lock_wait_ns_total\":%llu,"
         "\"cache_hits\":%lu,\"cache_misses\":%lu}",
@@ -202,15 +216,17 @@ if (strcmp(req->path, "/api/autocomplete") == 0 && method_is(req, "GET")) {
 if (strcmp(req->path, "/api/admin/insert") == 0 && method_is(req, "POST")) {
     /* body 파싱 → INSERT SQL 합성 → engine_exec_sql */
     ...
-    /* 성공 시 dict cache 무효화 */
-    cache_invalidate(s_dict_cache, new_entry.english);
-    /* 또는 보수적으로: cache_invalidate_all(s_dict_cache); */
+    /* 성공 시 dict cache 무효화 (english: prefix key) */
+    char key[160];
+    snprintf(key, sizeof(key), "english:%s", new_entry.english);
+    dict_cache_invalidate(s_dict_cache, key);
+    /* 또는 보수적으로: dict_cache_invalidate_all(s_dict_cache); */
     ...
 }
 ```
 
 ### Zone R-INIT — dict cache 인스턴스 생성 / 해제 (동현, router 내부)
-**위치**: `router.c` 파일 상단에 `static cache_t *s_dict_cache = NULL;`
+**위치**: `router.c` 파일 상단에 `static dict_cache_t *s_dict_cache = NULL;`
 초기화 방식은 구현자 선택:
 - **옵션 A** (추천): `pthread_once` 로 첫 요청 시 lazy init
 - **옵션 B**: `router_init_dict_cache()` 함수 신설, server.c 에서 호출
@@ -220,19 +236,20 @@ if (strcmp(req->path, "/api/admin/insert") == 0 && method_is(req, "POST")) {
 **삽입 예 (옵션 A)**:
 ```c
 /* router.c 상단 */
-static cache_t       *s_dict_cache = NULL;
+#include "dict_cache.h"          /* src/ 안 private 헤더 */
+static dict_cache_t *s_dict_cache = NULL;
 static pthread_once_t s_cache_once = PTHREAD_ONCE_INIT;
 
 static void init_dict_cache(void) {
-    s_dict_cache = cache_create(1024);
+    s_dict_cache = dict_cache_create(1024);
 }
 
 /* /api/dict 핸들러 진입 시 1 회 보장 */
 pthread_once(&s_cache_once, init_dict_cache);
 ```
 
-shutdown 시 cache_destroy 는 현 라운드에서는 생략 가능 (프로세스 종료
-시 OS 가 메모리 회수). 깔끔하게 하려면 atexit 등록 1 줄.
+shutdown 시 `dict_cache_destroy` 는 현 라운드에서는 생략 가능 (프로세스
+종료 시 OS 가 메모리 회수). 깔끔하게 하려면 atexit 등록 1 줄.
 
 ---
 
@@ -243,7 +260,7 @@ engine.c overlap 이 사라져 순서가 더 단순해짐:
 
 1. **PM (동적 threadpool)** 먼저 → dev
 2. **용 (trie)** — engine.c 에 Zone T1 + IT 삽입. router.c 는 건드리지 않음
-3. **동현 (dict cache + router)** — `src/cache.c` 신규 + `src/router.c` 에 Zone R-DICT-CACHE / R-STATS / R-INIT 삽입
+3. **동현 (dict cache + router)** — `src/dict_cache.c` + `src/dict_cache.h` 신규 + `src/router.c` 에 Zone R-DICT-CACHE / R-STATS / R-INIT 삽입
 4. **용 (router 신규 엔드포인트)** — 동현 PR 위에 Zone R-AUTO / R-ADMIN-INSERT 추가
 5. **승진 (UI)** — fetch URL 교체 (mock → 실연결)
 
