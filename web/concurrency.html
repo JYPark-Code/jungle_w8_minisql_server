@@ -737,16 +737,32 @@
   }
 
   /* /api/dict 응답은 engine.statements[0].columns / .rows 구조.
-   * 이전 구현은 engine.columns / engine.rows 를 보고 있어 항상 빈 배열
-   * (검색 결과가 화면에 안 나오는 증상의 원인). */
+   * 이전 구현은 engine.columns / engine.rows 를 직접 봤는데 현재 서버는
+   * 그 shape 을 내지 않아 항상 빈 배열이었음 (검색 결과 안 보이던 원인).
+   * statements 경로를 먼저 보고, 레거시/다른 shape 에도 대응하도록 fallback 유지. */
   function extractRows(responseJson) {
     const engine = responseJson && responseJson.engine;
-    const stmt = engine && Array.isArray(engine.statements) ? engine.statements[0] : null;
-    if (!stmt || !Array.isArray(stmt.columns) || !Array.isArray(stmt.rows)) {
-      return [];
+    if (!engine) return [];
+
+    let cols = null;
+    let rows = null;
+
+    if (Array.isArray(engine.statements)) {
+      const stmt = engine.statements.find(function (s) {
+        return s && Array.isArray(s.columns) && Array.isArray(s.rows);
+      });
+      if (stmt) {
+        cols = stmt.columns;
+        rows = stmt.rows;
+      }
     }
-    const cols = stmt.columns;
-    return stmt.rows.map(function (arr) {
+    if ((!cols || !rows) && Array.isArray(engine.columns) && Array.isArray(engine.rows)) {
+      cols = engine.columns;
+      rows = engine.rows;
+    }
+    if (!cols || !rows) return [];
+
+    return rows.map(function (arr) {
       const obj = {};
       for (let i = 0; i < cols.length; i++) {
         obj[cols[i]] = Array.isArray(arr) ? arr[i] : undefined;
