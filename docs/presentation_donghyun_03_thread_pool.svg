@@ -1,0 +1,89 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1000 620" font-family="Pretendard, 'Apple SD Gothic Neo', 'Malgun Gothic', 'Noto Sans KR', system-ui, sans-serif">
+  <rect width="1000" height="620" fill="#ffffff"/>
+  <defs>
+    <marker id="a3" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="8" markerHeight="8" orient="auto">
+      <path d="M0 0 L10 5 L0 10 z" fill="#1f2937"/>
+    </marker>
+  </defs>
+
+  <text x="500" y="44" text-anchor="middle" font-size="26" font-weight="700" fill="#1f2937">Thread Pool — Queue + Workers + 자동 확장</text>
+  <text x="500" y="72" text-anchor="middle" font-size="15" fill="#6b7280">서버 시작 시 worker 를 미리 만들어 두고, queue 로 요청을 분배한다</text>
+
+  <g>
+    <rect x="30" y="130" width="160" height="90" rx="8" fill="#f3f4f6" stroke="#1f2937" stroke-width="2"/>
+    <text x="110" y="165" text-anchor="middle" font-size="17" font-weight="600" fill="#1f2937">들어오는 요청</text>
+    <text x="110" y="190" text-anchor="middle" font-size="14" fill="#6b7280">server.c 가 submit</text>
+    <text x="110" y="208" text-anchor="middle" font-size="14" fill="#6b7280">(client_fd)</text>
+  </g>
+
+  <line x1="190" y1="175" x2="240" y2="175" stroke="#1f2937" stroke-width="2" marker-end="url(#a3)"/>
+
+  <g>
+    <text x="400" y="115" text-anchor="middle" font-size="20" font-weight="700" fill="#1f2937">Job Queue (최대 256)</text>
+    <rect x="245" y="135" width="310" height="85" rx="6" fill="#fef9c3" stroke="#ca8a04" stroke-width="2"/>
+    <rect x="260" y="150" width="42" height="55" rx="4" fill="#fde68a" stroke="#92400e" stroke-width="1.5"/>
+    <rect x="307" y="150" width="42" height="55" rx="4" fill="#fde68a" stroke="#92400e" stroke-width="1.5"/>
+    <rect x="354" y="150" width="42" height="55" rx="4" fill="#fde68a" stroke="#92400e" stroke-width="1.5"/>
+    <rect x="401" y="150" width="42" height="55" rx="4" fill="#ffffff" stroke="#d1d5db" stroke-width="1.5"/>
+    <text x="470" y="185" text-anchor="middle" font-size="20" fill="#6b7280">...</text>
+    <rect x="498" y="150" width="42" height="55" rx="4" fill="#ffffff" stroke="#d1d5db" stroke-width="1.5"/>
+    <text x="400" y="242" text-anchor="middle" font-size="14" fill="#92400e">FIFO — 먼저 들어온 요청부터 꺼냄</text>
+  </g>
+
+  <line x1="555" y1="175" x2="605" y2="175" stroke="#1f2937" stroke-width="2" marker-end="url(#a3)"/>
+
+  <g>
+    <text x="795" y="115" text-anchor="middle" font-size="20" font-weight="700" fill="#1f2937">Worker Pool</text>
+    <rect x="615" y="135" width="355" height="205" rx="10" fill="#dbeafe" stroke="#2563eb" stroke-width="2"/>
+
+    <rect x="635" y="155" width="75" height="58" rx="5" fill="#93c5fd" stroke="#1e3a8a" stroke-width="1.5"/>
+    <text x="672" y="190" text-anchor="middle" font-size="16" font-weight="700" fill="#1e3a8a">W1</text>
+
+    <rect x="720" y="155" width="75" height="58" rx="5" fill="#93c5fd" stroke="#1e3a8a" stroke-width="1.5"/>
+    <text x="757" y="190" text-anchor="middle" font-size="16" font-weight="700" fill="#1e3a8a">W2</text>
+
+    <rect x="805" y="155" width="75" height="58" rx="5" fill="#93c5fd" stroke="#1e3a8a" stroke-width="1.5"/>
+    <text x="842" y="190" text-anchor="middle" font-size="16" font-weight="700" fill="#1e3a8a">W3</text>
+
+    <rect x="890" y="155" width="75" height="58" rx="5" fill="#93c5fd" stroke="#1e3a8a" stroke-width="1.5"/>
+    <text x="927" y="190" text-anchor="middle" font-size="16" font-weight="700" fill="#1e3a8a">W4</text>
+
+    <rect x="635" y="222" width="75" height="58" rx="5" fill="#93c5fd" stroke="#1e3a8a" stroke-width="1.5"/>
+    <text x="672" y="257" text-anchor="middle" font-size="16" font-weight="700" fill="#1e3a8a">W5</text>
+
+    <rect x="720" y="222" width="75" height="58" rx="5" fill="#93c5fd" stroke="#1e3a8a" stroke-width="1.5"/>
+    <text x="757" y="257" text-anchor="middle" font-size="16" font-weight="700" fill="#1e3a8a">W6</text>
+
+    <rect x="805" y="222" width="75" height="58" rx="5" fill="#93c5fd" stroke="#1e3a8a" stroke-width="1.5"/>
+    <text x="842" y="257" text-anchor="middle" font-size="16" font-weight="700" fill="#1e3a8a">W7</text>
+
+    <rect x="890" y="222" width="75" height="58" rx="5" fill="#93c5fd" stroke="#1e3a8a" stroke-width="1.5"/>
+    <text x="927" y="257" text-anchor="middle" font-size="16" font-weight="700" fill="#1e3a8a">W8</text>
+
+    <text x="795" y="315" text-anchor="middle" font-size="15" fill="#1e40af">기본 8 개 — 서버 시작 시 미리 생성 (thread 생성 비용 절약)</text>
+  </g>
+
+  <g>
+    <rect x="60" y="400" width="880" height="195" rx="10" fill="#fef3c7" stroke="#f59e0b" stroke-width="2"/>
+    <text x="500" y="435" text-anchor="middle" font-size="22" font-weight="700" fill="#78350f">자동 확장 규칙</text>
+
+    <rect x="100" y="465" width="230" height="100" rx="6" fill="#ffffff" stroke="#d97706" stroke-width="1.5"/>
+    <text x="215" y="497" text-anchor="middle" font-size="16" font-weight="600" fill="#92400e">worker 사용률</text>
+    <text x="215" y="525" text-anchor="middle" font-size="24" font-weight="700" fill="#dc2626">80% 이상</text>
+    <text x="215" y="550" text-anchor="middle" font-size="14" fill="#92400e">3 회 연속 지속 (3 초)</text>
+
+    <text x="368" y="522" text-anchor="middle" font-size="32" fill="#92400e">→</text>
+
+    <rect x="400" y="465" width="220" height="100" rx="6" fill="#ffffff" stroke="#d97706" stroke-width="1.5"/>
+    <text x="510" y="497" text-anchor="middle" font-size="16" font-weight="600" fill="#92400e">worker 추가</text>
+    <text x="510" y="525" text-anchor="middle" font-size="24" font-weight="700" fill="#16a34a">+4 개</text>
+    <text x="510" y="550" text-anchor="middle" font-size="14" fill="#92400e">(8 → 12 → 16)</text>
+
+    <text x="655" y="522" text-anchor="middle" font-size="32" fill="#92400e">→</text>
+
+    <rect x="685" y="465" width="220" height="100" rx="6" fill="#ffffff" stroke="#d97706" stroke-width="1.5"/>
+    <text x="795" y="497" text-anchor="middle" font-size="16" font-weight="600" fill="#92400e">상한</text>
+    <text x="795" y="525" text-anchor="middle" font-size="24" font-weight="700" fill="#1f2937">최대 16 개</text>
+    <text x="795" y="550" text-anchor="middle" font-size="14" fill="#92400e">초과 시 확장 중단</text>
+  </g>
+</svg>

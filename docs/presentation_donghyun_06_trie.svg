@@ -1,0 +1,63 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1000 640" font-family="Pretendard, 'Apple SD Gothic Neo', 'Malgun Gothic', 'Noto Sans KR', system-ui, sans-serif">
+  <rect width="1000" height="640" fill="#ffffff"/>
+
+  <text x="500" y="44" text-anchor="middle" font-size="26" font-weight="700" fill="#1f2937">Trie — 영어 단어 검색 + 자동완성</text>
+  <text x="500" y="72" text-anchor="middle" font-size="15" fill="#6b7280">한 글자씩 따라 내려가며 저장 · 같은 prefix 는 노드를 공유</text>
+
+  <circle cx="500" cy="125" r="30" fill="#ffffff" stroke="#1f2937" stroke-width="2.5"/>
+  <text x="500" y="133" text-anchor="middle" font-size="15" font-weight="600" fill="#1f2937">root</text>
+
+  <line x1="500" y1="155" x2="500" y2="188" stroke="#1f2937" stroke-width="2"/>
+
+  <circle cx="500" cy="218" r="30" fill="#fef3c7" stroke="#d97706" stroke-width="3"/>
+  <text x="500" y="227" text-anchor="middle" font-size="22" font-weight="700" fill="#78350f">a</text>
+
+  <line x1="500" y1="248" x2="500" y2="281" stroke="#1f2937" stroke-width="2"/>
+
+  <circle cx="500" cy="311" r="30" fill="#fef3c7" stroke="#d97706" stroke-width="3"/>
+  <text x="500" y="320" text-anchor="middle" font-size="22" font-weight="700" fill="#78350f">p</text>
+
+  <line x1="500" y1="341" x2="500" y2="374" stroke="#1f2937" stroke-width="2"/>
+
+  <circle cx="500" cy="404" r="30" fill="#d1fae5" stroke="#059669" stroke-width="3"/>
+  <text x="500" y="413" text-anchor="middle" font-size="22" font-weight="700" fill="#064e3b">p</text>
+  <text x="552" y="402" font-size="15" font-weight="700" fill="#059669">"app"</text>
+  <text x="552" y="420" font-size="12" fill="#059669">단어 끝 표시</text>
+
+  <line x1="500" y1="434" x2="500" y2="467" stroke="#1f2937" stroke-width="2"/>
+
+  <circle cx="500" cy="497" r="30" fill="#ffffff" stroke="#1f2937" stroke-width="2.5"/>
+  <text x="500" y="506" text-anchor="middle" font-size="22" font-weight="700" fill="#1f2937">l</text>
+
+  <line x1="483" y1="522" x2="417" y2="557" stroke="#1f2937" stroke-width="2"/>
+  <line x1="517" y1="522" x2="583" y2="557" stroke="#1f2937" stroke-width="2"/>
+
+  <circle cx="410" cy="585" r="30" fill="#d1fae5" stroke="#059669" stroke-width="3"/>
+  <text x="410" y="594" text-anchor="middle" font-size="22" font-weight="700" fill="#064e3b">e</text>
+  <text x="410" y="630" text-anchor="middle" font-size="15" font-weight="700" fill="#059669">"apple"</text>
+
+  <circle cx="590" cy="585" r="30" fill="#d1fae5" stroke="#059669" stroke-width="3"/>
+  <text x="590" y="594" text-anchor="middle" font-size="22" font-weight="700" fill="#064e3b">y</text>
+  <text x="590" y="630" text-anchor="middle" font-size="15" font-weight="700" fill="#059669">"apply"</text>
+
+  <g>
+    <rect x="40" y="200" width="285" height="195" rx="10" fill="#fef3c7" stroke="#d97706" stroke-width="2"/>
+    <text x="182" y="232" text-anchor="middle" font-size="17" font-weight="700" fill="#78350f">prefix "ap" 자동완성</text>
+    <text x="182" y="262" text-anchor="middle" font-size="14" fill="#92400e">① root → a → p 까지 내려감</text>
+    <text x="182" y="283" text-anchor="middle" font-size="13" fill="#92400e">(노란 경로 = 입력 prefix)</text>
+    <text x="182" y="315" text-anchor="middle" font-size="14" fill="#92400e">② 그 아래 서브트리에서</text>
+    <text x="182" y="337" text-anchor="middle" font-size="14" fill="#92400e">   단어 끝 노드(초록)를 모아</text>
+    <text x="182" y="359" text-anchor="middle" font-size="14" fill="#92400e">   후보로 반환</text>
+    <text x="182" y="383" text-anchor="middle" font-size="14" font-weight="700" fill="#059669">→ app, apple, apply</text>
+  </g>
+
+  <g>
+    <rect x="675" y="200" width="285" height="195" rx="10" fill="#dbeafe" stroke="#2563eb" stroke-width="2"/>
+    <text x="817" y="232" text-anchor="middle" font-size="17" font-weight="700" fill="#1e3a8a">B+Tree 와 다른 점</text>
+    <text x="817" y="262" text-anchor="middle" font-size="14" fill="#1e40af">B+Tree: 숫자 key 정렬 인덱스</text>
+    <text x="817" y="283" text-anchor="middle" font-size="13" fill="#1e40af">(id = 12 정확 매칭 / range)</text>
+    <text x="817" y="315" text-anchor="middle" font-size="14" fill="#1e40af">Trie: 문자열을 글자 단위로</text>
+    <text x="817" y="337" text-anchor="middle" font-size="14" fill="#1e40af">prefix 공유 구조로 저장</text>
+    <text x="817" y="369" text-anchor="middle" font-size="14" font-weight="700" fill="#1e3a8a">→ 자동완성에 최적</text>
+  </g>
+</svg>

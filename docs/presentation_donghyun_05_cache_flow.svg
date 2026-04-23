@@ -1,0 +1,76 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1000 540" font-family="Pretendard, 'Apple SD Gothic Neo', 'Malgun Gothic', 'Noto Sans KR', system-ui, sans-serif">
+  <rect width="1000" height="540" fill="#ffffff"/>
+  <defs>
+    <marker id="a5" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="8" markerHeight="8" orient="auto">
+      <path d="M0 0 L10 5 L0 10 z" fill="#1f2937"/>
+    </marker>
+    <marker id="a5r" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="8" markerHeight="8" orient="auto">
+      <path d="M0 0 L10 5 L0 10 z" fill="#dc2626"/>
+    </marker>
+    <marker id="a5g" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="8" markerHeight="8" orient="auto">
+      <path d="M0 0 L10 5 L0 10 z" fill="#16a34a"/>
+    </marker>
+    <marker id="a5b" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="8" markerHeight="8" orient="auto">
+      <path d="M0 0 L10 5 L0 10 z" fill="#2563eb"/>
+    </marker>
+  </defs>
+
+  <text x="500" y="44" text-anchor="middle" font-size="26" font-weight="700" fill="#1f2937">Dict Cache — 반복 검색을 빠르게</text>
+  <text x="500" y="72" text-anchor="middle" font-size="15" fill="#6b7280">같은 단어 재검색 시 DB 엔진을 거치지 않고 바로 응답</text>
+
+  <text x="50" y="115" font-size="19" font-weight="700" fill="#1f2937">① 첫 검색 — cache MISS</text>
+
+  <rect x="50" y="135" width="130" height="65" rx="6" fill="#f3f4f6" stroke="#1f2937" stroke-width="2"/>
+  <text x="115" y="172" text-anchor="middle" font-size="16" font-weight="600" fill="#1f2937">Client</text>
+
+  <line x1="180" y1="168" x2="220" y2="168" stroke="#1f2937" stroke-width="2" marker-end="url(#a5)"/>
+
+  <rect x="225" y="135" width="150" height="65" rx="6" fill="#fce7f3" stroke="#be185d" stroke-width="2"/>
+  <text x="300" y="162" text-anchor="middle" font-size="16" font-weight="700" fill="#831843">router.c</text>
+  <text x="300" y="185" text-anchor="middle" font-size="13" fill="#9d174d">cache 확인</text>
+
+  <line x1="375" y1="168" x2="420" y2="168" stroke="#dc2626" stroke-width="2.5" marker-end="url(#a5r)"/>
+  <text x="397" y="158" text-anchor="middle" font-size="14" font-weight="700" fill="#dc2626">MISS</text>
+
+  <rect x="425" y="135" width="150" height="65" rx="6" fill="#d1fae5" stroke="#059669" stroke-width="2"/>
+  <text x="500" y="162" text-anchor="middle" font-size="16" font-weight="700" fill="#064e3b">engine.c</text>
+  <text x="500" y="185" text-anchor="middle" font-size="13" fill="#065f46">SELECT 실행</text>
+
+  <path d="M 575 168 L 640 168 L 640 235 L 300 235 L 300 202" stroke="#2563eb" stroke-width="2" fill="none" marker-end="url(#a5b)" stroke-dasharray="6 3"/>
+  <text x="790" y="232" font-size="14" font-weight="700" fill="#2563eb">결과를 cache 에 저장</text>
+
+  <path d="M 225 192 L 180 192" stroke="#16a34a" stroke-width="2" fill="none" marker-end="url(#a5g)"/>
+  <text x="200" y="212" text-anchor="middle" font-size="12" font-weight="700" fill="#16a34a">응답</text>
+
+  <line x1="50" y1="295" x2="950" y2="295" stroke="#d1d5db" stroke-width="1.5" stroke-dasharray="5 5"/>
+
+  <text x="50" y="330" font-size="19" font-weight="700" fill="#1f2937">② 재검색 — cache HIT</text>
+
+  <rect x="50" y="350" width="130" height="65" rx="6" fill="#f3f4f6" stroke="#1f2937" stroke-width="2"/>
+  <text x="115" y="387" text-anchor="middle" font-size="16" font-weight="600" fill="#1f2937">Client</text>
+
+  <line x1="180" y1="383" x2="220" y2="383" stroke="#1f2937" stroke-width="2" marker-end="url(#a5)"/>
+
+  <rect x="225" y="350" width="150" height="65" rx="6" fill="#fce7f3" stroke="#be185d" stroke-width="2"/>
+  <text x="300" y="377" text-anchor="middle" font-size="16" font-weight="700" fill="#831843">router.c</text>
+  <text x="300" y="400" text-anchor="middle" font-size="13" fill="#9d174d">cache 확인</text>
+
+  <path d="M 225 407 L 180 407" stroke="#16a34a" stroke-width="3" fill="none" marker-end="url(#a5g)"/>
+  <text x="200" y="425" text-anchor="middle" font-size="12" font-weight="700" fill="#16a34a">바로 응답</text>
+
+  <text x="397" y="372" text-anchor="middle" font-size="14" font-weight="700" fill="#16a34a">HIT</text>
+
+  <rect x="425" y="350" width="150" height="65" rx="6" fill="#f3f4f6" stroke="#9ca3af" stroke-width="2" stroke-dasharray="5 3"/>
+  <text x="500" y="377" text-anchor="middle" font-size="16" font-weight="700" fill="#9ca3af">engine.c</text>
+  <text x="500" y="400" text-anchor="middle" font-size="13" fill="#9ca3af">호출되지 않음</text>
+
+  <line x1="425" y1="350" x2="575" y2="415" stroke="#dc2626" stroke-width="1.5"/>
+  <line x1="575" y1="350" x2="425" y2="415" stroke="#dc2626" stroke-width="1.5"/>
+
+  <rect x="650" y="345" width="300" height="140" rx="10" fill="#fef9c3" stroke="#ca8a04" stroke-width="2"/>
+  <text x="800" y="375" text-anchor="middle" font-size="17" font-weight="700" fill="#78350f">nocache=1 옵션</text>
+  <text x="800" y="405" text-anchor="middle" font-size="13" fill="#92400e">?english=apple&amp;nocache=1</text>
+  <text x="800" y="430" text-anchor="middle" font-size="13" fill="#92400e">캐시 우회 → 항상 engine 실행</text>
+  <text x="800" y="452" text-anchor="middle" font-size="13" fill="#92400e">Stress Test 시 엔진 순수 성능</text>
+  <text x="800" y="472" text-anchor="middle" font-size="13" fill="#92400e">측정에 사용</text>
+</svg>
